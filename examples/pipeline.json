@@ -1,0 +1,37 @@
+{
+  "name": "staging deploy",
+  "stages": [
+    {
+      "name": "checkout",
+      "jobs": [
+        {
+          "id": "checkout",
+          "name": "Checkout code",
+          "job_type": "git_checkout",
+          "agent_mode": "single",
+          "agent_labels": ["build"],
+          "repo": {
+            "url": "https://github.com/example/app.git",
+            "ref": "main"
+          },
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "deploy",
+      "jobs": [
+        {
+          "id": "deploy",
+          "name": "Deploy service",
+          "job_type": "command",
+          "agent_mode": "chain",
+          "agent_labels": ["deploy", "staging"],
+          "commands": ["echo deploy staging"],
+          "timeout_seconds": 300,
+          "required": true
+        }
+      ]
+    }
+  ]
+}

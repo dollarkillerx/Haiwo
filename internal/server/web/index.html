@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Haiwo CI/CD</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">H</div>
+        <div>
+          <h1>Haiwo</h1>
+          <p data-i18n="brand.subtitle">Delivery control plane</p>
+        </div>
+      </div>
+
+      <nav class="nav" aria-label="Primary">
+        <button class="nav-item active" data-view="overview"><span data-i18n="nav.overview">Overview</span><small data-i18n="nav.overviewHint">运行概览</small></button>
+        <button class="nav-item" data-view="projects"><span data-i18n="nav.projects">Projects</span><small data-i18n="nav.projectsHint">仓库项目</small></button>
+        <button class="nav-item" data-view="pipelines"><span data-i18n="nav.pipelines">Pipelines</span><small data-i18n="nav.pipelinesHint">任务编排</small></button>
+        <button class="nav-item" data-view="runs"><span data-i18n="nav.runs">Runs</span><small data-i18n="nav.runsHint">执行历史</small></button>
+        <button class="nav-item" data-view="agents"><span data-i18n="nav.agents">Agents</span><small data-i18n="nav.agentsHint">执行节点</small></button>
+        <button class="nav-item" data-view="backups"><span data-i18n="nav.backups">Backups</span><small data-i18n="nav.backupsHint">数据备份</small></button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <span class="signal"></span>
+        <div>
+          <strong id="sidebar-agent-count">0 agents</strong>
+          <p data-i18n="sidebar.rpc">JSON-RPC over WebSocket</p>
+        </div>
+      </div>
+    </aside>
+
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow" data-i18n="top.eyebrow">Haiwo MVP Console</p>
+          <h2 id="view-title">Overview</h2>
+        </div>
+        <div class="top-actions">
+          <span id="last-refresh" class="last-refresh">Not synced</span>
+          <div class="lang-switch" aria-label="Language">
+            <button class="active" type="button" data-lang="en">EN</button>
+            <button type="button" data-lang="zh">中</button>
+          </div>
+          <form method="post" action="/logout">
+            <button class="icon-button" type="submit" title="Logout" aria-label="Logout"><span aria-hidden="true">⇥</span></button>
+          </form>
+          <button id="refresh" class="icon-button" type="button" title="Refresh" aria-label="Refresh">
+            <span aria-hidden="true">↻</span>
+          </button>
+        </div>
+      </header>
+
+      <section id="notice" class="notice hidden"></section>
+
+      <section class="view" id="overview-view">
+        <div class="hero-panel">
+          <div>
+            <p class="eyebrow" data-i18n="hero.eyebrow">Release Operations</p>
+            <h3 data-i18n="hero.title">Ship from git events, comments, schedules, or manual runs.</h3>
+            <p data-i18n="hero.body">Agent labels route work to build, deploy, database, staging, or production machines while the server keeps the orchestration record.</p>
+          </div>
+          <div class="hero-status">
+            <span class="status-dot"></span>
+            <strong id="hero-status">Waiting for data</strong>
+            <small id="hero-subtitle">Start a server and connect agents</small>
+          </div>
+        </div>
+
+        <div class="metrics">
+          <article class="metric">
+            <span data-i18n="metric.projects">Projects</span>
+            <strong id="metric-projects">0</strong>
+            <small data-i18n="metric.projectsHint">registered repositories</small>
+          </article>
+          <article class="metric">
+            <span data-i18n="metric.pipelines">Pipelines</span>
+            <strong id="metric-pipelines">0</strong>
+            <small data-i18n="metric.pipelinesHint">delivery workflows</small>
+          </article>
+          <article class="metric">
+            <span data-i18n="metric.runs">Runs</span>
+            <strong id="metric-runs">0</strong>
+            <small id="metric-run-note">no executions yet</small>
+          </article>
+          <article class="metric">
+            <span data-i18n="metric.agents">Online Agents</span>
+            <strong id="metric-agents">0</strong>
+            <small id="metric-agent-note">no capacity online</small>
+          </article>
+        </div>
+
+        <div class="grid overview-grid">
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h3 data-i18n="overview.recentRuns">Recent Runs</h3>
+                <p data-i18n="overview.recentRunsHint">Latest pipeline executions and rollback attempts.</p>
+              </div>
+            </div>
+            <div id="recent-runs" class="table"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h3 data-i18n="overview.agentCapacity">Agent Capacity</h3>
+                <p data-i18n="overview.agentCapacityHint">Live workers available for scheduled jobs.</p>
+              </div>
+            </div>
+            <div id="agent-capacity" class="capacity-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view hidden" id="projects-view">
+        <div class="grid two">
+          <form id="project-form" class="panel form">
+            <div class="panel-header">
+              <div>
+                <h3 data-i18n="project.create">Create Project</h3>
+                <p data-i18n="project.createHint">Bind a repository to Haiwo.</p>
+              </div>
+            </div>
+            <label><span data-i18n="field.name">Name</span><input name="name" required placeholder="payment-service" /></label>
+            <label><span data-i18n="field.provider">Provider</span>
+              <select name="provider">
+                <option value="github">GitHub</option>
+                <option value="gitlab">GitLab</option>
+                <option value="gitea">Gitea</option>
+              </select>
+            </label>
+            <label><span data-i18n="field.repoURL">Repository URL</span><input name="repo_url" required placeholder="https://github.com/org/repo.git" /></label>
+            <label><span data-i18n="field.defaultBranch">Default Branch</span><input name="default_branch" value="main" /></label>
+            <button class="button primary" type="submit" data-i18n="project.create">Create Project</button>
+          </form>
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h3 data-i18n="nav.projects">Projects</h3>
+                <p data-i18n="project.listHint">Source repositories registered in the control plane.</p>
+              </div>
+            </div>
+            <div id="projects-table" class="table"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view hidden" id="pipelines-view">
+        <div class="grid two wide-form">
+          <form id="pipeline-form" class="panel form">
+            <div class="panel-header">
+              <div>
+                <h3 data-i18n="pipeline.create">Create Pipeline</h3>
+                <p data-i18n="pipeline.createHint">Paste a stage and job definition.</p>
+              </div>
+            </div>
+            <label><span data-i18n="field.project">Project</span><select id="pipeline-project" name="project_id" required></select></label>
+            <label><span data-i18n="field.pipelineJSON">Pipeline JSON</span><textarea name="definition" rows="18" spellcheck="false"></textarea></label>
+            <button class="button primary" type="submit" data-i18n="pipeline.create">Create Pipeline</button>
+          </form>
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h3 data-i18n="nav.pipelines">Pipelines</h3>
+                <p data-i18n="pipeline.listHint">Reusable workflows for builds, deploys, backups, and rollbacks.</p>
+              </div>
+            </div>
+            <div id="pipelines-table" class="table"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view hidden" id="runs-view">
+        <div class="grid two">
+          <form id="run-form" class="panel form">
+            <div class="panel-header">
+              <div>
+                <h3 data-i18n="run.start">Start Run</h3>
+                <p data-i18n="run.startHint">Launch a pipeline with a ref or comment command.</p>
+              </div>
+            </div>
+            <label><span data-i18n="field.pipeline">Pipeline</span><select id="run-pipeline" name="pipeline_id" required></select></label>
+            <label><span data-i18n="field.ref">Ref</span><input name="ref" value="main" /></label>
+            <label><span data-i18n="field.comment">Comment</span><input name="comment" placeholder="/deploy staging" /></label>
+            <button class="button primary" type="submit" data-i18n="run.start">Start Run</button>
+          </form>
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h3 data-i18n="nav.runs">Runs</h3>
+                <p data-i18n="run.listHint">Execution records are polled every five seconds.</p>
+              </div>
+            </div>
+            <div id="runs-table" class="table"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view hidden" id="agents-view">
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h3 data-i18n="nav.agents">Agents</h3>
+              <p data-i18n="agent.listHint">Workers connected through JSON-RPC over WebSocket.</p>
+            </div>
+          </div>
+          <div id="agents-table" class="table"></div>
+        </div>
+      </section>
+
+      <section class="view hidden" id="backups-view">
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h3 data-i18n="nav.backups">Backups</h3>
+              <p data-i18n="backup.listHint">Database backup artifacts created by agent jobs.</p>
+            </div>
+          </div>
+          <div id="backups-table" class="table"></div>
+        </div>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

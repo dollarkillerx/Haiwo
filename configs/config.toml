@@ -1,0 +1,22 @@
+[ServiceConfiguration]
+Addr = ":8080"
+Debug = true
+
+[AgentConfiguration]
+Token = "dev-agent-token"
+
+[WebConfiguration]
+Password = "haiwo"
+
+[PostgresConfiguration]
+# Set Enabled = true to connect to Postgres and run GORM AutoMigrate at server startup.
+Enabled = true
+Host = "127.0.0.1"
+Port = 18432
+User = "pacman"
+Password = "MEB3oZZkpxgA1q4WcA10"
+DBName = "pacman"
+SSLMode = "disable"
+TimeZone = "UTC"
+# LogMode: none, console, slow_query
+LogMode = "none"
