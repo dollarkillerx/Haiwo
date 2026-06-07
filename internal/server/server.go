@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -244,6 +245,10 @@ func (a *App) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	event := webhookEvent(r.Header, raw)
+	if event.Type == "ping" {
+		writeJSON(w, http.StatusOK, map[string]any{"event": event.Type, "ignored": true, "reason": "ping event only verifies webhook connectivity", "matched": 0, "runs": []domain.Run{}})
+		return
+	}
 	projectID := r.PathValue("project_id")
 	triggers := a.store.ListTriggers(projectID)
 	started := []domain.Run{}
@@ -255,7 +260,7 @@ func (a *App) handleWebhook(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"matched": len(started), "runs": started})
+	writeJSON(w, http.StatusAccepted, map[string]any{"event": event.Type, "trigger_count": len(triggers), "matched": len(started), "runs": started})
 }
 
 func (a *App) startPipelineRun(w http.ResponseWriter, r *http.Request) {
@@ -1305,7 +1310,17 @@ func (s *Store) ListRuns(projectID string) []domain.Run {
 			out = append(out, v)
 		}
 	}
+	sort.Slice(out, func(i, j int) bool {
+		return runSortTime(out[i]).Before(runSortTime(out[j]))
+	})
 	return out
+}
+
+func runSortTime(run domain.Run) time.Time {
+	if !run.UpdatedAt.IsZero() {
+		return run.UpdatedAt
+	}
+	return run.CreatedAt
 }
 func (s *Store) ListTriggers(projectID string) []domain.Trigger {
 	s.mu.RLock()
