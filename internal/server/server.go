@@ -828,7 +828,7 @@ func webSSHHTML(agentID, agentName, ticket string) string {
     <div class="bar"><strong>Haiwo WebSSH - ` + agentName + `</strong><span id="status" class="status">connecting</span></div>
     <div id="term"></div>
     <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.8.0/lib/addon-fit.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
     <script>
       const status = document.getElementById("status");
       const term = new Terminal({ cursorBlink: true, convertEol: true, fontFamily: "Cascadia Mono, Consolas, monospace", fontSize: 14 });
