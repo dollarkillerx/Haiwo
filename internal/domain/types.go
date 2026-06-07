@@ -118,6 +118,10 @@ type AgentInfo struct {
 	Status        AgentStatus `json:"status"`
 	CurrentRun    int         `json:"current_run"`
 	MaxRunning    int         `json:"max_running"`
+	CPUPercent    float64     `json:"cpu_percent,omitempty"`
+	MemoryUsed    uint64      `json:"memory_used,omitempty"`
+	MemoryTotal   uint64      `json:"memory_total,omitempty"`
+	MemoryPercent float64     `json:"memory_percent,omitempty"`
 	SSHEnabled    bool        `json:"ssh_enabled"`
 	SSHHost       string      `json:"ssh_host,omitempty"`
 	SSHPort       int         `json:"ssh_port,omitempty"`

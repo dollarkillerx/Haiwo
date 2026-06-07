@@ -899,6 +899,13 @@ tbody tr:hover {
   font-size: 12px;
 }
 
+.capacity-item small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .load {
   min-width: 88px;
   align-self: center;

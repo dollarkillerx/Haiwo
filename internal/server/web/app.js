@@ -162,9 +162,12 @@ const translations = {
     "th.status": "Status",
     "th.source": "Source",
     "th.ref": "Ref",
+    "th.duration": "Duration",
     "th.updated": "Updated",
     "th.labels": "Labels",
     "th.load": "Load",
+    "th.cpu": "CPU",
+    "th.memory": "Memory",
     "th.version": "Version",
     "th.lastSeen": "Last Seen",
     "th.ssh": "SSH",
@@ -347,9 +350,12 @@ const translations = {
     "th.status": "状态",
     "th.source": "来源",
     "th.ref": "Ref",
+    "th.duration": "总耗时",
     "th.updated": "更新时间",
     "th.labels": "标签",
     "th.load": "负载",
+    "th.cpu": "CPU",
+    "th.memory": "内存",
     "th.version": "版本",
     "th.lastSeen": "最后在线",
     "th.ssh": "SSH",
@@ -532,9 +538,12 @@ const translations = {
     "th.status": "ステータス",
     "th.source": "ソース",
     "th.ref": "Ref",
+    "th.duration": "所要時間",
     "th.updated": "更新日時",
     "th.labels": "ラベル",
     "th.load": "負荷",
+    "th.cpu": "CPU",
+    "th.memory": "メモリ",
     "th.version": "バージョン",
     "th.lastSeen": "最終確認",
     "th.ssh": "SSH",
@@ -575,9 +584,7 @@ document.getElementById("last-refresh").textContent = t("sync.never");
 
 document.querySelectorAll(".nav-item").forEach((button) => {
   button.addEventListener("click", () => {
-    document.querySelectorAll(".nav-item").forEach((item) => item.classList.remove("active"));
-    button.classList.add("active");
-    showView(button.dataset.view);
+    activateView(button.dataset.view);
   });
 });
 
@@ -623,6 +630,11 @@ resetPipelineFormDefaults();
 resetAgentFormDefaults();
 refresh();
 setInterval(refresh, 5000);
+
+function activateView(name) {
+  document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === name));
+  showView(name);
+}
 
 function showView(name) {
   document.querySelectorAll(".view").forEach((view) => view.classList.add("hidden"));
@@ -880,8 +892,16 @@ function runTableAction(event) {
   const button = event.target.closest("[data-run-action]");
   if (!button) return;
   if (button.dataset.runAction === "details") {
+    const run = state.runs.find((item) => item.id === button.dataset.runId);
     state.selectedRunId = state.selectedRunId === button.dataset.runId ? "" : button.dataset.runId;
+    if (run) {
+      state.selectedRunPipelineId = run.pipeline_id || "";
+      renderRunPipelineFilter();
+    }
     renderRuns();
+    if (event.currentTarget.id === "recent-runs") {
+      activateView("runs");
+    }
   }
 }
 
@@ -1034,12 +1054,14 @@ function renderRunPipelineFilter() {
 
 function renderAgents() {
   document.getElementById("agents-table").innerHTML = table(
-    [t("th.name"), t("th.status"), t("th.labels"), t("th.load"), t("th.ssh"), t("th.version"), t("th.lastSeen"), t("th.actions")],
+    [t("th.name"), t("th.status"), t("th.labels"), t("th.load"), t("th.cpu"), t("th.memory"), t("th.ssh"), t("th.version"), t("th.lastSeen"), t("th.actions")],
     state.agents.map((a) => [
       strong(a.name),
       status(a.status),
       labels(a.labels || []),
       `${a.current_run}/${a.max_running}`,
+      percent(a.cpu_percent),
+      memorySummary(a),
       sshState(a),
       escapeHTML(a.version),
       date(a.last_seen_at),
@@ -1156,6 +1178,7 @@ function renderCapacity() {
         <div>
           <strong>${escapeHTML(agent.name)}</strong>
           <span>${labels(agent.labels || [])}</span>
+          <small>${escapeHTML(`CPU ${percentText(agent.cpu_percent)} · MEM ${memorySummaryText(agent)}`)}</small>
         </div>
         <div class="load">
           <div class="load-track"><div class="load-fill" style="width:${pct}%"></div></div>
@@ -1168,7 +1191,7 @@ function renderCapacity() {
 
 function runTable(runs) {
   return table(
-    [t("th.run"), t("th.project"), t("th.pipeline"), t("th.status"), t("th.source"), t("th.ref"), t("th.updated"), t("th.actions")],
+    [t("th.run"), t("th.project"), t("th.pipeline"), t("th.status"), t("th.source"), t("th.ref"), t("th.duration"), t("th.updated"), t("th.actions")],
     runs.map((r) => [
       code(r.id),
       shortName(state.projects.find((p) => p.id === r.project_id)),
@@ -1176,6 +1199,7 @@ function runTable(runs) {
       status(r.status),
       escapeHTML(r.source),
       code(r.ref || "-"),
+      runDuration(r),
       date(r.updated_at),
       runActions(r),
     ]),
@@ -1309,6 +1333,44 @@ function code(value) {
   return `<span class="code">${escapeHTML(value || "-")}</span>`;
 }
 
+function percent(value) {
+  return escapeHTML(percentText(value));
+}
+
+function percentText(value) {
+  const num = Number(value || 0);
+  return num > 0 ? `${num.toFixed(1)}%` : "-";
+}
+
+function memorySummary(agent) {
+  return escapeHTML(memorySummaryText(agent));
+}
+
+function memorySummaryText(agent) {
+  const pct = Number(agent.memory_percent || 0);
+  const used = Number(agent.memory_used || 0);
+  const total = Number(agent.memory_total || 0);
+  if (!pct && !used && !total) {
+    return "-";
+  }
+  const prefix = pct ? `${pct.toFixed(1)}%` : "-";
+  if (!used || !total) {
+    return prefix;
+  }
+  return `${prefix} (${formatBytes(used)}/${formatBytes(total)})`;
+}
+
+function formatBytes(value) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = Number(value || 0);
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size >= 10 || unit === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[unit]}`;
+}
+
 function repo(value) {
   return `<span title="${escapeHTML(value || "-")}">${escapeHTML(value || "-")}</span>`;
 }
@@ -1330,13 +1392,9 @@ function sshState(agent) {
 }
 
 function projectWebhooks(project) {
-  const providers = ["github", "gitlab", "gitea"];
-  return `<div class="row-actions webhook-actions">${providers
-    .map((provider) => {
-      const url = webhookURL(provider, project.id);
-      return `<button class="table-action" type="button" title="${escapeHTML(url)}" data-project-action="copy-webhook" data-provider="${escapeHTML(provider)}" data-project-id="${escapeHTML(project.id)}">${escapeHTML(providerLabel(provider))}</button>`;
-    })
-    .join("")}</div>`;
+  const provider = project.provider || "github";
+  const url = webhookURL(provider, project.id);
+  return `<button class="table-action" type="button" title="${escapeHTML(url)}" data-project-action="copy-webhook" data-provider="${escapeHTML(provider)}" data-project-id="${escapeHTML(project.id)}">${escapeHTML(t("action.copy"))}</button>`;
 }
 
 function webhookURL(provider, projectID) {
@@ -1452,6 +1510,29 @@ function slug(value) {
 function date(value) {
   if (!value) return "-";
   return escapeHTML(new Date(value).toLocaleString());
+}
+
+function runDuration(run) {
+  const start = new Date(run.created_at).getTime();
+  const end = isActiveRun(run) ? Date.now() : new Date(run.updated_at || run.created_at).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+    return "-";
+  }
+  return escapeHTML(formatDuration(end - start));
+}
+
+function isActiveRun(run) {
+  return run.status === "queued" || run.status === "running" || run.status === "rollback_running";
+}
+
+function formatDuration(ms) {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h) return `${h}h ${m}m ${s}s`;
+  if (m) return `${m}m ${s}s`;
+  return `${s}s`;
 }
 
 function escapeHTML(value) {

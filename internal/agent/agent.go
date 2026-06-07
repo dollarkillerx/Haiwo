@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +43,12 @@ type Agent struct {
 	mu      sync.Mutex
 	running map[string]context.CancelFunc
 	terms   map[string]*terminalSession
+	cpuPrev *cpuSample
+}
+
+type cpuSample struct {
+	idle  uint64
+	total uint64
 }
 
 type terminalSession struct {
@@ -140,7 +147,9 @@ func (a *Agent) heartbeat(ctx context.Context) {
 func (a *Agent) info() domain.AgentInfo {
 	a.mu.Lock()
 	running := len(a.running)
+	cpuPercent := a.cpuPercentLocked()
 	a.mu.Unlock()
+	memUsed, memTotal, memPercent := memoryUsage()
 	status := domain.AgentOnline
 	if running >= a.cfg.MaxRunning {
 		status = domain.AgentBusy
@@ -153,10 +162,87 @@ func (a *Agent) info() domain.AgentInfo {
 		Status:        status,
 		CurrentRun:    running,
 		MaxRunning:    a.cfg.MaxRunning,
+		CPUPercent:    cpuPercent,
+		MemoryUsed:    memUsed,
+		MemoryTotal:   memTotal,
+		MemoryPercent: memPercent,
 		SSHEnabled:    a.cfg.SSHEnabled,
 		ReverseSSHURL: a.cfg.ReverseSSHURL,
 		LastSeenAt:    time.Now(),
 	}
+}
+
+func (a *Agent) cpuPercentLocked() float64 {
+	sample, ok := readCPUSample()
+	if !ok {
+		return 0
+	}
+	prev := a.cpuPrev
+	a.cpuPrev = &sample
+	if prev == nil || sample.total <= prev.total || sample.idle < prev.idle {
+		return 0
+	}
+	totalDelta := sample.total - prev.total
+	if totalDelta == 0 {
+		return 0
+	}
+	idleDelta := sample.idle - prev.idle
+	return float64(totalDelta-idleDelta) * 100 / float64(totalDelta)
+}
+
+func readCPUSample() (cpuSample, bool) {
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return cpuSample{}, false
+	}
+	line, _, _ := strings.Cut(string(data), "\n")
+	fields := strings.Fields(line)
+	if len(fields) < 5 || fields[0] != "cpu" {
+		return cpuSample{}, false
+	}
+	var values []uint64
+	for _, field := range fields[1:] {
+		value, err := strconv.ParseUint(field, 10, 64)
+		if err != nil {
+			return cpuSample{}, false
+		}
+		values = append(values, value)
+	}
+	var total uint64
+	for _, value := range values {
+		total += value
+	}
+	idle := values[3]
+	if len(values) > 4 {
+		idle += values[4]
+	}
+	return cpuSample{idle: idle, total: total}, true
+}
+
+func memoryUsage() (uint64, uint64, float64) {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0, 0, 0
+	}
+	values := map[string]uint64{}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		value, err := strconv.ParseUint(fields[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		values[strings.TrimSuffix(fields[0], ":")] = value * 1024
+	}
+	total := values["MemTotal"]
+	available := values["MemAvailable"]
+	if total == 0 || available > total {
+		return 0, total, 0
+	}
+	used := total - available
+	return used, total, float64(used) * 100 / float64(total)
 }
 
 func (a *Agent) handleTaskRun(ctx context.Context, params json.RawMessage) (any, *jsonrpc.Error) {
@@ -426,11 +512,9 @@ func (a *Agent) runCommands(ctx context.Context, task domain.TaskPayload) error 
 		return err
 	}
 	for _, command := range task.Commands {
-		if err := a.runShell(ctx, task, dir, command, taskEnv(task)); err != nil {
-			return err
-		}
+		a.sendLog(task, "stdout", "$ "+command)
 	}
-	return nil
+	return a.runShellScript(ctx, task, dir, task.Commands, taskEnv(task))
 }
 
 func (a *Agent) gitCheckout(ctx context.Context, task domain.TaskPayload) error {
@@ -465,6 +549,25 @@ func (a *Agent) gitCheckout(ctx context.Context, task domain.TaskPayload) error 
 func (a *Agent) runShell(ctx context.Context, task domain.TaskPayload, dir, command string, env []string) error {
 	a.sendLog(task, "stdout", "$ "+command)
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd.Dir = dir
+	cmd.Env = env
+	stdout, _ := cmd.StdoutPipe()
+	stderr, _ := cmd.StderrPipe()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go a.scan(task, "stdout", stdout)
+	go a.scan(task, "stderr", stderr)
+	return cmd.Wait()
+}
+
+func (a *Agent) runShellScript(ctx context.Context, task domain.TaskPayload, dir string, commands []string, env []string) error {
+	scriptPath := filepath.Join(dir, ".haiwo-task.sh")
+	script := "#!/bin/sh\nset -e\n" + strings.Join(commands, "\n") + "\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o700); err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, "sh", scriptPath)
 	cmd.Dir = dir
 	cmd.Env = env
 	stdout, _ := cmd.StdoutPipe()
