@@ -98,7 +98,10 @@ func (a *App) Routes() http.Handler {
 	mux.Handle("POST /api/projects", auth(a.createProject))
 	mux.Handle("GET /api/pipelines", auth(a.listPipelines))
 	mux.Handle("POST /api/projects/{id}/pipelines", auth(a.createPipeline))
+	mux.Handle("PUT /api/pipelines/{id}", auth(a.updatePipeline))
+	mux.Handle("GET /api/triggers", auth(a.listTriggers))
 	mux.Handle("POST /api/projects/{id}/triggers", auth(a.createTrigger))
+	mux.Handle("DELETE /api/pipelines/{id}/triggers", auth(a.deletePipelineTriggers))
 	mux.HandleFunc("POST /api/webhooks/{provider}/{project_id}", a.handleWebhook)
 	mux.Handle("GET /api/runs", auth(a.listRuns))
 	mux.Handle("GET /api/runs/{id}", auth(a.getRun))
@@ -179,8 +182,31 @@ func (a *App) createPipeline(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, p)
 }
 
+func (a *App) updatePipeline(w http.ResponseWriter, r *http.Request) {
+	existing, ok := a.store.GetPipeline(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	var p domain.Pipeline
+	if !decodeJSON(w, r, &p) {
+		return
+	}
+	p.ID = existing.ID
+	if p.ProjectID == "" {
+		p.ProjectID = existing.ProjectID
+	}
+	p.CreatedAt = existing.CreatedAt
+	a.store.SavePipeline(p)
+	writeJSON(w, http.StatusOK, p)
+}
+
 func (a *App) listPipelines(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.store.ListPipelines(r.URL.Query().Get("project_id")))
+}
+
+func (a *App) listTriggers(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, a.store.ListTriggers(r.URL.Query().Get("project_id")))
 }
 
 func (a *App) createTrigger(w http.ResponseWriter, r *http.Request) {
@@ -205,6 +231,11 @@ func (a *App) createTrigger(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusCreated, t)
+}
+
+func (a *App) deletePipelineTriggers(w http.ResponseWriter, r *http.Request) {
+	a.store.DeleteTriggersForPipeline(r.PathValue("id"))
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (a *App) handleWebhook(w http.ResponseWriter, r *http.Request) {
@@ -1054,6 +1085,21 @@ func (s *Store) SaveTrigger(v domain.Trigger) {
 	}
 }
 
+func (s *Store) DeleteTriggersForPipeline(pipelineID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, trigger := range s.triggers {
+		if trigger.PipelineID == pipelineID {
+			delete(s.triggers, id)
+		}
+	}
+	if s.db != nil {
+		if err := s.db.Delete(&dbmodel.Trigger{}, "pipeline_id = ?", pipelineID).Error; err != nil {
+			log.Printf("delete pipeline triggers failed: %v", err)
+		}
+	}
+}
+
 func (s *Store) SaveAgent(v domain.AgentInfo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1264,9 +1310,9 @@ func (s *Store) ListRuns(projectID string) []domain.Run {
 func (s *Store) ListTriggers(projectID string) []domain.Trigger {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var out []domain.Trigger
+	out := make([]domain.Trigger, 0, len(s.triggers))
 	for _, v := range s.triggers {
-		if v.ProjectID == projectID {
+		if projectID == "" || v.ProjectID == projectID {
 			out = append(out, v)
 		}
 	}

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Haiwo CI/CD</title>
-    <link rel="stylesheet" href="/styles.css?v=202606071745" />
+    <link rel="stylesheet" href="/styles.css?v=202606071805" />
   </head>
   <body>
     <aside class="sidebar">
@@ -158,8 +158,8 @@
           <form id="pipeline-form" class="panel form create-panel hidden" data-create-panel="pipelines">
             <div class="panel-header">
               <div>
-                <h3 data-i18n="pipeline.create">Create Pipeline</h3>
-                <p data-i18n="pipeline.createHint">Choose a trigger and add ordered Agent command steps.</p>
+                <h3 id="pipeline-form-title" data-i18n="pipeline.create">Create Pipeline</h3>
+                <p id="pipeline-form-hint" data-i18n="pipeline.createHint">Choose a trigger and add ordered Agent command steps.</p>
               </div>
               <button class="button small" type="button" data-create-cancel="pipelines" data-i18n="action.cancel">Cancel</button>
             </div>
@@ -181,7 +181,7 @@
               </div>
               <div id="pipeline-steps" class="step-list"></div>
             </div>
-            <button class="button primary" type="submit" data-i18n="pipeline.create">Create Pipeline</button>
+            <button id="pipeline-submit" class="button primary" type="submit" data-i18n="pipeline.create">Create Pipeline</button>
           </form>
           <div class="panel">
             <div class="panel-header">
@@ -273,6 +273,6 @@
       </section>
     </main>
 
-    <script src="/app.js?v=202606071745"></script>
+    <script src="/app.js?v=202606071805"></script>
   </body>
 </html>

@@ -1,9 +1,11 @@
 const state = {
   projects: [],
   pipelines: [],
+  triggers: [],
   runs: [],
   agents: [],
   settings: {},
+  editingPipelineId: "",
   selectedRunId: "",
   selectedRunPipelineId: "",
 };
@@ -49,6 +51,9 @@ const translations = {
     "project.listHint": "Source repositories registered in the control plane.",
     "pipeline.create": "Create Pipeline",
     "pipeline.createHint": "Choose a trigger and add ordered Agent command steps.",
+    "pipeline.edit": "Edit Pipeline",
+    "pipeline.editHint": "Update the trigger and ordered Agent command steps.",
+    "pipeline.update": "Update Pipeline",
     "pipeline.listHint": "Reusable workflows for push, tag, manual runs, and ordered Agent commands.",
     "run.start": "Start Run",
     "run.startHint": "Launch a pipeline with a ref or comment command.",
@@ -126,6 +131,7 @@ const translations = {
     "notice.projectRequired": "Create a project before adding a pipeline.",
     "notice.pipelineInvalid": "Pipeline JSON is invalid: {message}",
     "notice.pipelineCreated": "Pipeline created.",
+    "notice.pipelineUpdated": "Pipeline updated.",
     "notice.pipelineRequired": "Create a pipeline before starting a run.",
     "notice.agentRequired": "Add at least one agent before creating a pipeline step.",
     "notice.stepCommandsRequired": "Each step needs command content.",
@@ -134,6 +140,7 @@ const translations = {
     "notice.agentDeleted": "Agent deleted.",
     "notice.agentDuplicate": "Agent name already exists.",
     "notice.scriptCopied": "Deployment command copied.",
+    "notice.webhookCopied": "{provider} webhook URL copied.",
     "notice.sshCommand": "SSH command: {command}",
     "notice.settingsSaved": "Settings saved.",
     "empty.projects": "Create a project to connect a repository.",
@@ -145,6 +152,7 @@ const translations = {
     "th.provider": "Provider",
     "th.repository": "Repository",
     "th.defaultBranch": "Default Branch",
+    "th.webhooks": "Webhooks",
     "th.id": "ID",
     "th.project": "Project",
     "th.stages": "Stages",
@@ -164,6 +172,7 @@ const translations = {
     "action.script": "Script",
     "action.ssh": "SSH",
     "action.run": "Run",
+    "action.edit": "Edit",
     "action.details": "Details",
     "action.copy": "Copy",
     "action.add": "Add",
@@ -227,6 +236,9 @@ const translations = {
     "project.listHint": "已注册到控制平面的源代码仓库。",
     "pipeline.create": "创建流水线",
     "pipeline.createHint": "选择触发方式，然后添加按顺序执行的 Agent 命令步骤。",
+    "pipeline.edit": "编辑流水线",
+    "pipeline.editHint": "更新触发方式和按顺序执行的 Agent 命令步骤。",
+    "pipeline.update": "保存流水线",
     "pipeline.listHint": "用于 push、tag、手动运行和顺序 Agent 命令的可复用工作流。",
     "run.start": "启动运行",
     "run.startHint": "使用 ref 或评论命令启动流水线。",
@@ -304,6 +316,7 @@ const translations = {
     "notice.projectRequired": "请先创建项目，再添加流水线。",
     "notice.pipelineInvalid": "流水线 JSON 无效：{message}",
     "notice.pipelineCreated": "流水线已创建。",
+    "notice.pipelineUpdated": "流水线已更新。",
     "notice.pipelineRequired": "请先创建流水线，再启动运行。",
     "notice.agentRequired": "请先添加至少一个 Agent，再创建流水线步骤。",
     "notice.stepCommandsRequired": "每个步骤都需要填写命令内容。",
@@ -312,6 +325,7 @@ const translations = {
     "notice.agentDeleted": "Agent 已删除。",
     "notice.agentDuplicate": "Agent 名称已存在。",
     "notice.scriptCopied": "部署命令已复制。",
+    "notice.webhookCopied": "{provider} Hook URL 已复制。",
     "notice.sshCommand": "SSH 命令：{command}",
     "notice.settingsSaved": "设置已保存。",
     "empty.projects": "创建项目后即可连接代码仓库。",
@@ -323,6 +337,7 @@ const translations = {
     "th.provider": "平台",
     "th.repository": "仓库",
     "th.defaultBranch": "默认分支",
+    "th.webhooks": "Hook",
     "th.id": "ID",
     "th.project": "项目",
     "th.stages": "阶段",
@@ -342,6 +357,7 @@ const translations = {
     "action.script": "脚本",
     "action.ssh": "SSH",
     "action.run": "运行",
+    "action.edit": "编辑",
     "action.details": "详情",
     "action.copy": "复制",
     "action.add": "添加",
@@ -405,6 +421,9 @@ const translations = {
     "project.listHint": "制御プレーンに登録されたソースリポジトリ。",
     "pipeline.create": "パイプライン作成",
     "pipeline.createHint": "トリガーを選び、順番に実行する Agent コマンドステップを追加します。",
+    "pipeline.edit": "パイプライン編集",
+    "pipeline.editHint": "トリガーと順序付き Agent コマンドステップを更新します。",
+    "pipeline.update": "パイプライン保存",
     "pipeline.listHint": "push、tag、手動実行、順序付き Agent コマンド用の再利用可能なワークフロー。",
     "run.start": "実行開始",
     "run.startHint": "ref またはコメントコマンドでパイプラインを起動します。",
@@ -482,6 +501,7 @@ const translations = {
     "notice.projectRequired": "パイプラインを追加する前にプロジェクトを作成してください。",
     "notice.pipelineInvalid": "パイプライン JSON が無効です: {message}",
     "notice.pipelineCreated": "パイプラインを作成しました。",
+    "notice.pipelineUpdated": "パイプラインを更新しました。",
     "notice.pipelineRequired": "実行を開始する前にパイプラインを作成してください。",
     "notice.agentRequired": "パイプラインステップを作成する前に Agent を追加してください。",
     "notice.stepCommandsRequired": "各ステップにコマンドを入力してください。",
@@ -490,6 +510,7 @@ const translations = {
     "notice.agentDeleted": "Agent を削除しました。",
     "notice.agentDuplicate": "Agent 名はすでに存在します。",
     "notice.scriptCopied": "デプロイコマンドをコピーしました。",
+    "notice.webhookCopied": "{provider} Webhook URL をコピーしました。",
     "notice.sshCommand": "SSH コマンド: {command}",
     "notice.settingsSaved": "設定を保存しました。",
     "empty.projects": "プロジェクトを作成するとリポジトリを接続できます。",
@@ -501,6 +522,7 @@ const translations = {
     "th.provider": "プロバイダー",
     "th.repository": "リポジトリ",
     "th.defaultBranch": "デフォルトブランチ",
+    "th.webhooks": "Webhook",
     "th.id": "ID",
     "th.project": "プロジェクト",
     "th.stages": "Stage",
@@ -520,6 +542,7 @@ const translations = {
     "action.script": "スクリプト",
     "action.ssh": "SSH",
     "action.run": "実行",
+    "action.edit": "編集",
     "action.details": "詳細",
     "action.copy": "コピー",
     "action.add": "追加",
@@ -583,6 +606,7 @@ document.getElementById("run-pipeline-filter").addEventListener("change", (event
 });
 document.getElementById("agent-form").addEventListener("submit", createAgent);
 document.getElementById("settings-form").addEventListener("submit", saveSettings);
+document.getElementById("projects-table").addEventListener("click", projectTableAction);
 document.getElementById("agents-table").addEventListener("click", agentTableAction);
 document.getElementById("pipelines-table").addEventListener("click", pipelineTableAction);
 document.getElementById("runs-table").addEventListener("click", runTableAction);
@@ -611,14 +635,15 @@ function showView(name) {
 
 async function refresh() {
   try {
-    const [projects, pipelines, runs, agents, settings] = await Promise.all([
+    const [projects, pipelines, triggers, runs, agents, settings] = await Promise.all([
       api("/api/projects"),
       api("/api/pipelines"),
+      api("/api/triggers"),
       api("/api/runs"),
       api("/api/agents"),
       api("/api/settings"),
     ]);
-    Object.assign(state, { projects, pipelines, runs, agents, settings });
+    Object.assign(state, { projects, pipelines, triggers, runs, agents, settings });
     lastSyncTime = new Date().toLocaleTimeString();
     render();
     document.getElementById("last-refresh").textContent = t("sync.now", { time: lastSyncTime });
@@ -659,9 +684,27 @@ async function createPipeline(event) {
     notify(t("notice.stepCommandsRequired"), true);
     return;
   }
-  const definition = {
+  const definition = pipelineDefinition(form, validSteps, project);
+  let pipeline;
+  if (state.editingPipelineId) {
+    pipeline = await api(`/api/pipelines/${state.editingPipelineId}`, { method: "PUT", body: { ...definition, project_id: projectID } });
+    await api(`/api/pipelines/${pipeline.id}/triggers`, { method: "DELETE" });
+    await createPipelineTrigger(projectID, pipeline.id, form, project);
+    notify(t("notice.pipelineUpdated"));
+  } else {
+    pipeline = await api(`/api/projects/${projectID}/pipelines`, { method: "POST", body: definition });
+    await createPipelineTrigger(projectID, pipeline.id, form, project);
+    notify(t("notice.pipelineCreated"));
+  }
+  await refresh();
+  resetPipelineFormDefaults();
+  closeCreatePanel("pipelines");
+}
+
+function pipelineDefinition(form, steps, project) {
+  return {
     name: form.get("pipeline_name"),
-    stages: validSteps.map((step, index) => ({
+    stages: steps.map((step, index) => ({
       name: `step-${index + 1}`,
       jobs: [
         {
@@ -678,12 +721,6 @@ async function createPipeline(event) {
       ],
     })),
   };
-  const pipeline = await api(`/api/projects/${projectID}/pipelines`, { method: "POST", body: definition });
-  await createPipelineTrigger(projectID, pipeline.id, form, project);
-  notify(t("notice.pipelineCreated"));
-  await refresh();
-  resetPipelineFormDefaults();
-  closeCreatePanel("pipelines");
 }
 
 async function createPipelineTrigger(projectID, pipelineID, form, project) {
@@ -766,6 +803,17 @@ async function saveSettings(event) {
   notify(t("notice.settingsSaved"));
 }
 
+async function projectTableAction(event) {
+  const button = event.target.closest("[data-project-action]");
+  if (!button) return;
+  if (button.dataset.projectAction === "copy-webhook") {
+    const provider = button.dataset.provider;
+    const projectID = button.dataset.projectId;
+    await copyText(webhookURL(provider, projectID));
+    notify(t("notice.webhookCopied", { provider: providerLabel(provider) }));
+  }
+}
+
 async function agentTableAction(event) {
   const button = event.target.closest("[data-agent-action]");
   if (!button) return;
@@ -793,12 +841,39 @@ async function pipelineTableAction(event) {
   const button = event.target.closest("[data-pipeline-action]");
   if (!button) return;
   const pipelineID = button.dataset.pipelineId;
+  if (button.dataset.pipelineAction === "edit") {
+    editPipeline(pipelineID);
+    return;
+  }
   const pipeline = state.pipelines.find((item) => item.id === pipelineID);
   const project = pipeline ? state.projects.find((item) => item.id === pipeline.project_id) : null;
   const ref = project?.default_branch || "main";
   const run = await api(`/api/pipelines/${pipelineID}/runs`, { method: "POST", body: { type: "manual", ref } });
   notify(t("notice.runStarted", { id: run.id }));
   await refresh();
+}
+
+function editPipeline(pipelineID) {
+  const pipeline = state.pipelines.find((item) => item.id === pipelineID);
+  if (!pipeline) return;
+  state.editingPipelineId = pipelineID;
+  showCreatePanel("pipelines", { reset: false });
+  const form = document.getElementById("pipeline-form");
+  form.project_id.value = pipeline.project_id;
+  form.pipeline_name.value = pipeline.name || "";
+  const trigger = state.triggers.find((item) => item.pipeline_id === pipeline.id);
+  form.trigger_type.value = trigger?.type || "manual";
+  renderTriggerFields();
+  if (trigger?.type === "push") {
+    form.querySelector('[name="trigger_branch"]').value = trigger.branch_pattern || "";
+    form.querySelector('[name="trigger_commit"]').value = trigger.commit_pattern || "";
+  }
+  if (trigger?.type === "tag") {
+    form.querySelector('[name="trigger_tag"]').value = trigger.tag_pattern || "";
+  }
+  pipelineSteps = pipelineStepsFromDefinition(pipeline);
+  renderPipelineSteps();
+  renderPipelineFormMode();
 }
 
 function runTableAction(event) {
@@ -819,10 +894,11 @@ function toggleHelp(event) {
   button.classList.toggle("active", !target.classList.contains("hidden"));
 }
 
-function showCreatePanel(name) {
-  if (name === "projects") resetProjectFormDefaults();
-  if (name === "pipelines") resetPipelineFormDefaults();
-  if (name === "agents") {
+function showCreatePanel(name, options = {}) {
+  const shouldReset = options.reset !== false;
+  if (name === "projects" && shouldReset) resetProjectFormDefaults();
+  if (name === "pipelines" && shouldReset) resetPipelineFormDefaults();
+  if (name === "agents" && shouldReset) {
     resetAgentFormDefaults();
   }
   document.querySelector(`[data-create-panel="${name}"]`)?.classList.remove("hidden");
@@ -831,7 +907,10 @@ function showCreatePanel(name) {
 function closeCreatePanel(name) {
   document.querySelector(`[data-create-panel="${name}"]`)?.classList.add("hidden");
   if (name === "projects") resetProjectFormDefaults();
-  if (name === "pipelines") resetPipelineFormDefaults();
+  if (name === "pipelines") {
+    state.editingPipelineId = "";
+    resetPipelineFormDefaults();
+  }
   if (name === "agents") resetAgentFormDefaults();
 }
 
@@ -876,6 +955,7 @@ function render() {
   updatePipelineStepsFromDOM();
   renderTriggerFields();
   renderPipelineSteps();
+  renderPipelineFormMode();
 
   renderProjects();
   renderPipelines();
@@ -910,8 +990,8 @@ function renderHero(onlineAgents, runningRuns, failedRuns) {
 
 function renderProjects() {
   document.getElementById("projects-table").innerHTML = table(
-    [t("th.name"), t("th.provider"), t("th.repository"), t("th.defaultBranch"), t("th.id")],
-    state.projects.map((p) => [strong(p.name), badge(p.provider), repo(p.repo_url), code(p.default_branch), code(p.id)]),
+    [t("th.name"), t("th.provider"), t("th.repository"), t("th.defaultBranch"), t("th.webhooks"), t("th.id")],
+    state.projects.map((p) => [strong(p.name), badge(p.provider), repo(p.repo_url), code(p.default_branch), projectWebhooks(p), code(p.id)]),
     t("empty.projects")
   );
 }
@@ -1249,6 +1329,26 @@ function sshState(agent) {
   return "-";
 }
 
+function projectWebhooks(project) {
+  const providers = ["github", "gitlab", "gitea"];
+  return `<div class="row-actions webhook-actions">${providers
+    .map((provider) => {
+      const url = webhookURL(provider, project.id);
+      return `<button class="table-action" type="button" title="${escapeHTML(url)}" data-project-action="copy-webhook" data-provider="${escapeHTML(provider)}" data-project-id="${escapeHTML(project.id)}">${escapeHTML(providerLabel(provider))}</button>`;
+    })
+    .join("")}</div>`;
+}
+
+function webhookURL(provider, projectID) {
+  const base = String(state.settings?.server_base_url || window.location.origin || "").replace(/\/+$/, "");
+  return `${base}/api/webhooks/${encodeURIComponent(provider)}/${encodeURIComponent(projectID)}`;
+}
+
+function providerLabel(provider) {
+  const labels = { github: "GitHub", gitlab: "GitLab", gitea: "Gitea" };
+  return labels[provider] || provider;
+}
+
 function agentActions(agent) {
   const script = `<button class="table-action" type="button" data-agent-action="script" data-agent-id="${escapeHTML(agent.id)}">${escapeHTML(t("action.script"))}</button>`;
   const ssh = `<button class="table-action" type="button" data-agent-action="ssh" data-agent-id="${escapeHTML(agent.id)}">${escapeHTML(t("action.ssh"))}</button>`;
@@ -1257,7 +1357,9 @@ function agentActions(agent) {
 }
 
 function pipelineActions(pipeline) {
-  return `<button class="table-action" type="button" data-pipeline-action="run" data-pipeline-id="${escapeHTML(pipeline.id)}">${escapeHTML(t("action.run"))}</button>`;
+  const edit = `<button class="table-action" type="button" data-pipeline-action="edit" data-pipeline-id="${escapeHTML(pipeline.id)}">${escapeHTML(t("action.edit"))}</button>`;
+  const run = `<button class="table-action" type="button" data-pipeline-action="run" data-pipeline-id="${escapeHTML(pipeline.id)}">${escapeHTML(t("action.run"))}</button>`;
+  return `<div class="row-actions">${edit}${run}</div>`;
 }
 
 function splitList(value) {
@@ -1298,12 +1400,36 @@ function resetProjectFormDefaults() {
 function resetPipelineFormDefaults() {
   const form = document.getElementById("pipeline-form");
   if (!form) return;
+  state.editingPipelineId = "";
   form.pipeline_name.value = "staging deploy";
   form.trigger_type.value = "manual";
   pipelineSteps = [{ id: crypto.randomUUID(), agent_id: state.agents[0]?.id || "", commands: "echo deploy staging", timeout_seconds: 300 }];
   syncPipelineRef(true);
   renderTriggerFields();
   renderPipelineSteps();
+  renderPipelineFormMode();
+}
+
+function renderPipelineFormMode() {
+  const editing = Boolean(state.editingPipelineId);
+  document.getElementById("pipeline-form-title").textContent = t(editing ? "pipeline.edit" : "pipeline.create");
+  document.getElementById("pipeline-form-hint").textContent = t(editing ? "pipeline.editHint" : "pipeline.createHint");
+  document.getElementById("pipeline-submit").textContent = t(editing ? "pipeline.update" : "pipeline.create");
+}
+
+function pipelineStepsFromDefinition(pipeline) {
+  const steps = [];
+  for (const stage of pipeline.stages || []) {
+    for (const job of stage.jobs || []) {
+      steps.push({
+        id: crypto.randomUUID(),
+        agent_id: job.agent_ids?.[0] || "",
+        commands: (job.commands || []).join("\n"),
+        timeout_seconds: Number(job.timeout_seconds || 300),
+      });
+    }
+  }
+  return steps.length ? steps : [{ id: crypto.randomUUID(), agent_id: state.agents[0]?.id || "", commands: "", timeout_seconds: 300 }];
 }
 
 function resetAgentFormDefaults() {

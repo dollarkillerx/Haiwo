@@ -693,6 +693,10 @@ textarea {
   gap: 6px;
 }
 
+.webhook-actions {
+  flex-wrap: wrap;
+}
+
 .table-action {
   border: 1px solid var(--line-strong);
   border-radius: 2px;
