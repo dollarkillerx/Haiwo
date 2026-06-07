@@ -58,12 +58,33 @@ func New(cfg Config) *Agent {
 }
 
 func (a *Agent) Run(ctx context.Context) error {
+	backoff := time.Second
+	for {
+		if err := a.runOnce(ctx); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			log.Printf("agent connection failed: %v; reconnecting in %s", err, backoff)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+			backoff = minDuration(backoff*2, 30*time.Second)
+			continue
+		}
+		backoff = time.Second
+	}
+}
+
+func (a *Agent) runOnce(ctx context.Context) error {
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+a.cfg.Token)
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, a.cfg.ServerURL, headers)
 	if err != nil {
 		return err
 	}
+	defer a.closeTerminals()
 	a.peer = jsonrpc.NewPeer(conn)
 	a.peer.Handle("task.run", a.handleTaskRun)
 	a.peer.Handle("task.cancel", a.handleTaskCancel)
@@ -92,6 +113,13 @@ func (a *Agent) Run(ctx context.Context) error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (a *Agent) heartbeat(ctx context.Context) {
@@ -337,6 +365,18 @@ func (a *Agent) closeTerminal(sessionID string) {
 	_ = session.file.Close()
 	if session.cmd.Process != nil {
 		_ = session.cmd.Process.Kill()
+	}
+}
+
+func (a *Agent) closeTerminals() {
+	a.mu.Lock()
+	ids := make([]string, 0, len(a.terms))
+	for id := range a.terms {
+		ids = append(ids, id)
+	}
+	a.mu.Unlock()
+	for _, id := range ids {
+		a.closeTerminal(id)
 	}
 }
 
