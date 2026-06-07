@@ -128,7 +128,7 @@ const translations = {
     "notice.agentCreated": "Agent {id} created. Deployment script is ready.",
     "notice.agentDeleted": "Agent deleted.",
     "notice.agentDuplicate": "Agent name already exists.",
-    "notice.scriptCopied": "Deployment script URL copied.",
+    "notice.scriptCopied": "Deployment command copied.",
     "notice.sshCommand": "SSH command: {command}",
     "notice.settingsSaved": "Settings saved.",
     "empty.projects": "Create a project to connect a repository.",
@@ -297,7 +297,7 @@ const translations = {
     "notice.agentCreated": "Agent {id} 已创建，部署脚本已生成。",
     "notice.agentDeleted": "Agent 已删除。",
     "notice.agentDuplicate": "Agent 名称已存在。",
-    "notice.scriptCopied": "部署脚本地址已复制。",
+    "notice.scriptCopied": "部署命令已复制。",
     "notice.sshCommand": "SSH 命令：{command}",
     "notice.settingsSaved": "设置已保存。",
     "empty.projects": "创建项目后即可连接代码仓库。",
@@ -466,7 +466,7 @@ const translations = {
     "notice.agentCreated": "Agent {id} を作成しました。デプロイスクリプトを生成しました。",
     "notice.agentDeleted": "Agent を削除しました。",
     "notice.agentDuplicate": "Agent 名はすでに存在します。",
-    "notice.scriptCopied": "デプロイスクリプト URL をコピーしました。",
+    "notice.scriptCopied": "デプロイコマンドをコピーしました。",
     "notice.sshCommand": "SSH コマンド: {command}",
     "notice.settingsSaved": "設定を保存しました。",
     "empty.projects": "プロジェクトを作成するとリポジトリを接続できます。",
@@ -715,7 +715,8 @@ async function startRun(event) {
 
 async function createAgent(event) {
   event.preventDefault();
-  const form = new FormData(event.currentTarget);
+  const formElement = event.currentTarget;
+  const form = new FormData(formElement);
   const payload = {
     name: form.get("name"),
     labels: checkedValues("agent-labels"),
@@ -724,7 +725,7 @@ async function createAgent(event) {
   };
   try {
     const result = await api("/api/agents", { method: "POST", body: payload });
-    event.currentTarget.reset();
+    formElement.reset();
     resetAgentFormDefaults();
     closeCreatePanel("agents");
     notify(t("notice.agentCreated", { id: result.agent.id }));
@@ -750,7 +751,7 @@ async function agentTableAction(event) {
   const agentID = button.dataset.agentId;
   if (button.dataset.agentAction === "script") {
     const result = await api(`/api/agents/${agentID}/deploy-script`);
-    await copyText(result.url);
+    await copyText(result.command || result.url);
     notify(t("notice.scriptCopied"));
   }
   if (button.dataset.agentAction === "ssh") {

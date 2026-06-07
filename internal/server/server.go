@@ -334,7 +334,11 @@ func (a *App) agentDeployScript(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"url": a.deployScriptURL(r, agent)})
+	url := a.deployScriptURL(r, agent)
+	writeJSON(w, http.StatusOK, map[string]string{
+		"url":     url,
+		"command": "curl -fsSL " + shellQuote(url) + " | bash",
+	})
 }
 
 func (a *App) agentDeployShell(w http.ResponseWriter, r *http.Request) {
@@ -511,30 +515,21 @@ func (a *App) deployScript(r *http.Request, agent domain.AgentInfo) string {
 	serverURL := agentRPCURL(a.baseURL(r))
 	labels := strings.Join(agent.Labels, ",")
 	lines := []string{
-		"#!/usr/bin/env sh",
-		"set -eu",
+		"#!/usr/bin/env bash",
+		"set -euo pipefail",
 		"",
 		"# Haiwo agent deployment script.",
-		": ${HAIWO_AGENT_BIN:=./haiwo-agent}",
 		": ${HAIWO_AGENT_BINARY_URL:=https://fileoss.hacksnews.top/haiwo-agent-linux-amd64}",
-		"if [ ! -x \"$HAIWO_AGENT_BIN\" ]; then",
-		"  if command -v curl >/dev/null 2>&1; then",
-		"    curl -fsSL \"$HAIWO_AGENT_BINARY_URL\" -o \"$HAIWO_AGENT_BIN\"",
-		"  elif command -v wget >/dev/null 2>&1; then",
-		"    wget -qO \"$HAIWO_AGENT_BIN\" \"$HAIWO_AGENT_BINARY_URL\"",
-		"  else",
-		"    echo \"curl or wget is required to download haiwo agent\" >&2",
-		"    exit 1",
-		"  fi",
-		"  chmod +x \"$HAIWO_AGENT_BIN\"",
-		"fi",
 		"export HAIWO_SERVER_URL=" + shellQuote(serverURL),
 		"export HAIWO_AGENT_TOKEN=" + shellQuote(agent.Token),
 		"export HAIWO_AGENT_ID=" + shellQuote(agent.ID),
 		"export HAIWO_AGENT_NAME=" + shellQuote(agent.Name),
 		"export HAIWO_AGENT_LABELS=" + shellQuote(labels),
-		"export HAIWO_AGENT_WORKDIR=${HAIWO_AGENT_WORKDIR:-.haiwo-agent}",
 		"export HAIWO_AGENT_MAX_RUNNING=" + shellQuote(strconv.Itoa(max(agent.MaxRunning, 1))),
+		": ${HAIWO_AGENT_HOME:=${HOME:-/opt/haiwo}/.haiwo/agents/${HAIWO_AGENT_ID}}",
+		": ${HAIWO_AGENT_BIN:=${HAIWO_AGENT_HOME}/haiwo-agent}",
+		": ${HAIWO_AGENT_PID_FILE:=${HAIWO_AGENT_HOME}/haiwo-agent.pid}",
+		"export HAIWO_AGENT_WORKDIR=${HAIWO_AGENT_WORKDIR:-${HAIWO_AGENT_HOME}/workdir}",
 	}
 	if agent.ReverseSSHURL != "" {
 		lines = append(lines, "export HAIWO_AGENT_REVERSE_SSH_URL="+shellQuote(agent.ReverseSSHURL))
@@ -542,7 +537,62 @@ func (a *App) deployScript(r *http.Request, agent domain.AgentInfo) string {
 	if agent.SSHEnabled {
 		lines = append(lines, "export HAIWO_AGENT_SSH_ENABLED=true")
 	}
-	lines = append(lines, "", "exec \"$HAIWO_AGENT_BIN\"")
+	lines = append(lines,
+		"",
+		"mkdir -p \"$HAIWO_AGENT_HOME\" \"$HAIWO_AGENT_WORKDIR\"",
+		"",
+		"stop_agent() {",
+		"  if [ -f \"$HAIWO_AGENT_PID_FILE\" ]; then",
+		"    old_pid=\"$(cat \"$HAIWO_AGENT_PID_FILE\" 2>/dev/null || true)\"",
+		"    if [ -n \"$old_pid\" ] && kill -0 \"$old_pid\" >/dev/null 2>&1; then",
+		"      echo \"Stopping existing Haiwo agent pid=${old_pid}\"",
+		"      kill \"$old_pid\" >/dev/null 2>&1 || true",
+		"      for _ in {1..20}; do",
+		"        kill -0 \"$old_pid\" >/dev/null 2>&1 || break",
+		"        sleep 0.2",
+		"      done",
+		"      kill -0 \"$old_pid\" >/dev/null 2>&1 && kill -9 \"$old_pid\" >/dev/null 2>&1 || true",
+		"    fi",
+		"    rm -f \"$HAIWO_AGENT_PID_FILE\"",
+		"  fi",
+		"  if command -v pgrep >/dev/null 2>&1; then",
+		"    while IFS= read -r old_pid; do",
+		"      [ -n \"$old_pid\" ] || continue",
+		"      [ \"$old_pid\" = \"$$\" ] && continue",
+		"      echo \"Stopping existing Haiwo agent process pid=${old_pid}\"",
+		"      kill \"$old_pid\" >/dev/null 2>&1 || true",
+		"    done <<EOF",
+		"$(pgrep -f \"$HAIWO_AGENT_BIN\" || true)",
+		"EOF",
+		"  fi",
+		"}",
+		"",
+		"download_agent() {",
+		"  tmp_bin=\"${HAIWO_AGENT_BIN}.tmp\"",
+		"  rm -f \"$tmp_bin\"",
+		"  if command -v curl >/dev/null 2>&1; then",
+		"    curl -fsSL \"$HAIWO_AGENT_BINARY_URL\" -o \"$tmp_bin\"",
+		"  elif command -v wget >/dev/null 2>&1; then",
+		"    wget -qO \"$tmp_bin\" \"$HAIWO_AGENT_BINARY_URL\"",
+		"  else",
+		"    echo \"curl or wget is required to download haiwo agent\" >&2",
+		"    exit 1",
+		"  fi",
+		"  chmod +x \"$tmp_bin\"",
+		"  mv \"$tmp_bin\" \"$HAIWO_AGENT_BIN\"",
+		"}",
+		"",
+		"if [ -e \"$HAIWO_AGENT_BIN\" ]; then",
+		"  stop_agent",
+		"  rm -f \"$HAIWO_AGENT_BIN\"",
+		"fi",
+		"",
+		"download_agent",
+		"nohup \"$HAIWO_AGENT_BIN\" >>\"${HAIWO_AGENT_HOME}/agent.log\" 2>&1 &",
+		"echo $! > \"$HAIWO_AGENT_PID_FILE\"",
+		"echo \"Haiwo agent started pid=$(cat \"$HAIWO_AGENT_PID_FILE\")\"",
+		"echo \"Log: ${HAIWO_AGENT_HOME}/agent.log\"",
+	)
 	return strings.Join(lines, "\n")
 }
 
