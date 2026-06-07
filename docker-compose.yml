@@ -8,7 +8,7 @@
 
 services:
   server:
-    image: haiwo/haiwo:latest
+    image: dollarkiller/haiwo:latest
     container_name: haiwo-server
     ports:
       - "8181:8080"

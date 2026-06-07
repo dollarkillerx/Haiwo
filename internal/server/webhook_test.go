@@ -14,6 +14,13 @@ func TestWebhookEventGitHubComment(t *testing.T) {
 	}
 }
 
+func TestWebhookEventGitHubPing(t *testing.T) {
+	event := webhookEvent(http.Header{"X-Github-Event": []string{"ping"}}, map[string]any{})
+	if event.Type != "ping" {
+		t.Fatalf("unexpected event: %#v", event)
+	}
+}
+
 func TestWebhookEventPush(t *testing.T) {
 	event := webhookEvent(http.Header{}, map[string]any{"ref": "refs/heads/main"})
 	if event.Type != "push" || event.Branch != "main" {

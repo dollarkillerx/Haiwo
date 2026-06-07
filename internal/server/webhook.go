@@ -8,6 +8,9 @@ import (
 )
 
 func webhookEvent(headers http.Header, raw map[string]any) domain.TriggerEvent {
+	if ev := headers.Get("X-GitHub-Event"); ev == "ping" {
+		return domain.TriggerEvent{Type: "ping"}
+	}
 	if comment := nestedString(raw, "comment", "body"); comment != "" {
 		return domain.TriggerEvent{Type: "comment", Comment: comment, Branch: branchFromRaw(raw), Ref: refFromRaw(raw)}
 	}

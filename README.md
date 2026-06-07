@@ -2,9 +2,13 @@
 
 ![Haiwo logo](internal/server/web/logo.png)
 
+[中文说明](README_CN.md) | [Deployment Guide](DEPLOYMENT.md)
+
 Haiwo is a Go-based CI/CD MVP with a central server, pull-based agents, JSON-RPC communication, webhook/schedule/manual triggers, pipeline orchestration, and code rollback history.
 
 The current implementation is an MVP scaffold. When Postgres is enabled, projects, pipelines, triggers, agents, runs, and settings are persisted through GORM models created with `AutoMigrate`.
+
+Deployment and operations are documented in [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## 1. Design Document
 
@@ -47,7 +51,7 @@ Agent responsibilities:
 
 - connect to the server as a JSON-RPC WebSocket client
 - register itself with labels and capacity
-- keep heartbeat status updated
+- keep heartbeat status updated, including in-memory CPU and memory metrics
 - execute server-dispatched tasks
 - stream logs and completion status back to the server
 
@@ -80,7 +84,7 @@ Authentication:
 Agent-to-server JSON-RPC methods:
 
 - `agent.register`: register or re-register the agent.
-- `agent.heartbeat`: report labels, status, version, and current load.
+- `agent.heartbeat`: report labels, status, version, current load, CPU usage, and memory usage.
 - `task.log`: stream stdout/stderr lines.
 - `task.progress`: report task progress.
 - `task.complete`: report final job status, exit code, and artifacts.
@@ -134,6 +138,7 @@ Run:
 
 - immutable execution history record
 - tracks source, ref, comment, status, timestamps, and metadata
+- run lists are displayed newest first and include total duration
 - rollback creates a new run instead of modifying old history
 
 ### 1.5 Trigger Design
@@ -150,6 +155,14 @@ Webhook activation supports:
 - tag
 - pull request / merge request comment
 - issue comment style command
+
+Webhook provider endpoints:
+
+- GitHub: `/api/webhooks/github/{project_id}`
+- GitLab: `/api/webhooks/gitlab/{project_id}`
+- Gitea: `/api/webhooks/gitea/{project_id}`
+
+GitHub sends a `ping` event when a hook is created. Haiwo treats this as a connectivity check and returns an ignored response with `matched: 0`; it does not start a pipeline.
 
 Trigger matching supports:
 
@@ -197,7 +210,7 @@ Brand asset:
 - Migrations use GORM `AutoMigrate`; SQL migration files are not used.
 - Secrets are modeled but not yet encrypted or persisted.
 - Web UI supports common MVP operations, not full rollback editing yet.
-- Pipeline creation supports manual, push branch, push commit-message, and tag triggers plus ordered Agent command steps.
+- Pipeline creation and editing support manual, push branch, push commit-message, and tag triggers plus ordered Agent command steps.
 - Git provider API status updates are not implemented yet.
 
 ## 2. Usage Document
@@ -373,13 +386,61 @@ Agent environment variables:
 6. Add an agent in the Agents screen and copy its deployment script.
 7. Start at least one agent with that script.
 8. Create a project in the Projects screen.
-9. Create a pipeline in the Pipelines screen using the option-based form.
+9. Copy the project Hook URL when configuring GitHub/GitLab/Gitea webhooks.
+10. Create a pipeline in the Pipelines screen using the option-based form.
    Choose a trigger: manual only, push branch, push branch with commit-message text, or tag name.
    Add one or more ordered steps. Each step selects one Agent and command content; steps run sequentially.
-10. Start a run in the Runs screen, or click `Run` in the Pipelines list to trigger the pipeline with the project's default branch.
-11. Watch run status and agent status refresh automatically.
+11. Click `Run` in the Pipelines list to manually trigger the pipeline with the project's default branch.
+12. Use the Runs screen to filter history, open run details, and inspect logs/errors.
+13. Watch run status and agent status refresh automatically.
 
-### 2.7 Database AutoMigrate
+Webhook setup notes:
+
+- GitHub content type should be `application/json`.
+- GitHub `ping` verifies the hook and is expected to return `matched: 0`.
+- For a push trigger, select `Just the push event` in GitHub.
+- A trigger with `commit_pattern` only runs when the pushed commit messages contain that text, for example `deploy`.
+- For comment triggers, select individual comment events in the Git provider and configure the comment pattern in Haiwo.
+
+### 2.7 GitHub Usage
+
+Minimal GitHub workflow:
+
+1. Create a project with provider `github`.
+2. Use the repository clone URL, for example `https://github.com/org/app.git` or `git@github.com:org/app.git`.
+3. Set the default branch, for example `main`.
+4. In Projects, copy the Hook URL from the project row.
+5. In GitHub, open repository `Settings` -> `Webhooks` -> `Add webhook`.
+6. Paste the Haiwo Hook URL into `Payload URL`.
+7. Select `application/json` as `Content type`.
+8. Leave `Secret` empty for the MVP unless signature verification is implemented later.
+9. Keep SSL verification enabled.
+10. Choose events according to the Haiwo pipeline trigger.
+
+GitHub event mapping:
+
+| Haiwo trigger | GitHub event setting | Haiwo condition |
+| --- | --- | --- |
+| Push branch | `Just the push event` | branch matches, for example `main` |
+| Push branch + commit text | `Just the push event` | branch matches and commit message contains text, for example `deploy` |
+| Tag | `Let me select individual events` -> `Branch or tag creation` is not required; GitHub push payload includes tag refs when tags are pushed | tag name matches, for example `dev*` |
+| Comment command | `Let me select individual events` -> issue or pull request comment events | comment matches, for example `/deploy staging` |
+
+GitHub sends a `ping` request immediately after the webhook is saved. A response with `matched: 0` is expected for `ping`; push a commit or tag to test a real trigger.
+
+For a push pipeline configured as branch `main` and commit text `deploy`, this commit message will run:
+
+```text
+deploy staging
+```
+
+This commit message will not run:
+
+```text
+fix typo
+```
+
+### 2.8 Database AutoMigrate
 
 Enable Postgres in `configs/config.toml`:
 
@@ -414,7 +475,7 @@ The AutoMigrate entrypoint is:
 internal/database/migrate.go
 ```
 
-### 2.8 API Workflow
+### 2.9 API Workflow
 
 Create a project:
 
@@ -458,7 +519,7 @@ Check one run:
 curl -sS http://localhost:8080/api/runs/RUN_ID
 ```
 
-### 2.9 Pipeline JSON Example
+### 2.10 Pipeline JSON Example
 
 ```json
 {
@@ -514,7 +575,7 @@ curl -sS -X POST http://localhost:8080/api/projects/PROJECT_ID/triggers \
   -d '{"pipeline_id":"PIPELINE_ID","type":"tag","tag_pattern":"dev*"}'
 ```
 
-### 2.10 Development Checks
+### 2.11 Development Checks
 
 Run tests:
 
