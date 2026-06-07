@@ -983,7 +983,7 @@ function render() {
   renderAgents();
   renderSettings();
   renderCapacity();
-  document.getElementById("recent-runs").innerHTML = runTable(state.runs.slice(-8).reverse());
+  document.getElementById("recent-runs").innerHTML = runTable([...state.runs].sort(compareRunsNewestFirst).slice(0, 8));
 }
 
 function renderHero(onlineAgents, runningRuns, failedRuns) {
@@ -1034,7 +1034,7 @@ function renderPipelines() {
 function renderRuns() {
   const runs = state.runs
     .filter((run) => !state.selectedRunPipelineId || run.pipeline_id === state.selectedRunPipelineId)
-    .reverse();
+    .sort(compareRunsNewestFirst);
   if (state.selectedRunId && !runs.some((run) => run.id === state.selectedRunId)) {
     state.selectedRunId = "";
   }
@@ -1519,6 +1519,19 @@ function runDuration(run) {
     return "-";
   }
   return escapeHTML(formatDuration(end - start));
+}
+
+function compareRunsNewestFirst(a, b) {
+  return runSortTime(b) - runSortTime(a);
+}
+
+function runSortTime(run) {
+  const updated = new Date(run.updated_at || "").getTime();
+  if (Number.isFinite(updated)) {
+    return updated;
+  }
+  const created = new Date(run.created_at || "").getTime();
+  return Number.isFinite(created) ? created : 0;
 }
 
 function isActiveRun(run) {
