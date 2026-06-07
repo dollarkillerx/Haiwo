@@ -755,8 +755,7 @@ async function agentTableAction(event) {
     notify(t("notice.scriptCopied"));
   }
   if (button.dataset.agentAction === "ssh") {
-    const result = await api(`/api/agents/${agentID}/ssh-command`);
-    notify(t("notice.sshCommand", { command: result.command }));
+    window.open(`/ssh/agents/${agentID}`, "_blank", "noopener");
   }
   if (button.dataset.agentAction === "delete") {
     const agent = state.agents.find((item) => item.id === agentID);

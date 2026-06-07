@@ -3,6 +3,7 @@ module github.com/haiwo-ci/haiwo
 go 1.26
 
 require (
+	github.com/creack/pty v1.1.24
 	github.com/gorilla/websocket v1.5.3
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/spf13/viper v1.21.0

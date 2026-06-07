@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"html"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,11 +32,24 @@ type Config struct {
 }
 
 type App struct {
-	cfg      Config
-	store    *Store
-	hub      *AgentHub
-	cron     *cron.Cron
-	upgrader websocket.Upgrader
+	cfg       Config
+	store     *Store
+	hub       *AgentHub
+	cron      *cron.Cron
+	upgrader  websocket.Upgrader
+	termMu    sync.Mutex
+	terminals map[string]*terminalBridge
+	tickets   map[string]terminalTicket
+}
+
+type terminalBridge struct {
+	conn *websocket.Conn
+	mu   sync.Mutex
+}
+
+type terminalTicket struct {
+	AgentID   string
+	ExpiresAt time.Time
 }
 
 func New(cfg Config) *App {
@@ -42,11 +57,13 @@ func New(cfg Config) *App {
 		cfg.Now = time.Now
 	}
 	app := &App{
-		cfg:   cfg,
-		store: NewStore(cfg.Now, cfg.DB),
-		cron:  cron.New(),
+		cfg:       cfg,
+		store:     NewStore(cfg.Now, cfg.DB),
+		cron:      cron.New(),
+		terminals: map[string]*terminalBridge{},
+		tickets:   map[string]terminalTicket{},
 		upgrader: websocket.Upgrader{
-			CheckOrigin: func(*http.Request) bool { return true },
+			CheckOrigin: checkWebSocketOrigin,
 		},
 	}
 	app.hub = NewAgentHub(app.store)
@@ -56,6 +73,9 @@ func New(cfg Config) *App {
 
 func (a *App) Routes() http.Handler {
 	mux := http.NewServeMux()
+	auth := func(h http.HandlerFunc) http.Handler {
+		return a.requireWebAuth(http.HandlerFunc(h))
+	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -64,27 +84,29 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /logout", a.logout)
 	mux.Handle("GET /logo.png", staticHandler())
 	mux.HandleFunc("GET /rpc/agent/ws", a.handleAgentWS)
-	mux.HandleFunc("GET /api/projects", a.listProjects)
-	mux.HandleFunc("POST /api/projects", a.createProject)
-	mux.HandleFunc("GET /api/pipelines", a.listPipelines)
-	mux.HandleFunc("POST /api/projects/{id}/pipelines", a.createPipeline)
-	mux.HandleFunc("POST /api/projects/{id}/triggers", a.createTrigger)
+	mux.Handle("GET /ssh/agents/{id}", a.requireWebAuth(http.HandlerFunc(a.webSSHPage)))
+	mux.Handle("GET /api/agents/{id}/terminal/ws", a.requireWebAuth(http.HandlerFunc(a.handleTerminalWS)))
+	mux.Handle("GET /api/projects", auth(a.listProjects))
+	mux.Handle("POST /api/projects", auth(a.createProject))
+	mux.Handle("GET /api/pipelines", auth(a.listPipelines))
+	mux.Handle("POST /api/projects/{id}/pipelines", auth(a.createPipeline))
+	mux.Handle("POST /api/projects/{id}/triggers", auth(a.createTrigger))
 	mux.HandleFunc("POST /api/webhooks/{provider}/{project_id}", a.handleWebhook)
-	mux.HandleFunc("GET /api/runs", a.listRuns)
-	mux.HandleFunc("GET /api/runs/{id}", a.getRun)
-	mux.HandleFunc("POST /api/pipelines/{id}/runs", a.startPipelineRun)
-	mux.HandleFunc("POST /api/runs/{id}/cancel", a.cancelRun)
-	mux.HandleFunc("POST /api/runs/{id}/rollback", a.rollbackRun)
-	mux.HandleFunc("GET /api/settings", a.getSettings)
-	mux.HandleFunc("PUT /api/settings", a.updateSettings)
-	mux.HandleFunc("POST /api/agents", a.createAgent)
-	mux.HandleFunc("DELETE /api/agents/{id}", a.deleteAgent)
-	mux.HandleFunc("GET /api/agents/{id}/deploy-script", a.agentDeployScript)
+	mux.Handle("GET /api/runs", auth(a.listRuns))
+	mux.Handle("GET /api/runs/{id}", auth(a.getRun))
+	mux.Handle("POST /api/pipelines/{id}/runs", auth(a.startPipelineRun))
+	mux.Handle("POST /api/runs/{id}/cancel", auth(a.cancelRun))
+	mux.Handle("POST /api/runs/{id}/rollback", auth(a.rollbackRun))
+	mux.Handle("GET /api/settings", auth(a.getSettings))
+	mux.Handle("PUT /api/settings", auth(a.updateSettings))
+	mux.Handle("POST /api/agents", auth(a.createAgent))
+	mux.Handle("DELETE /api/agents/{id}", auth(a.deleteAgent))
+	mux.Handle("GET /api/agents/{id}/deploy-script", auth(a.agentDeployScript))
 	mux.HandleFunc("GET /api/agents/{id}/deploy.sh", a.agentDeployShell)
-	mux.HandleFunc("GET /api/agents/{id}/ssh-command", a.agentSSHCommand)
-	mux.HandleFunc("GET /api/agents", func(w http.ResponseWriter, _ *http.Request) {
+	mux.Handle("GET /api/agents/{id}/ssh-command", auth(a.agentSSHCommand))
+	mux.Handle("GET /api/agents", auth(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, a.store.ListAgents())
-	})
+	}))
 	mux.Handle("GET /", a.requireWebAuth(staticHandler()))
 	return mux
 }
@@ -114,6 +136,8 @@ func (a *App) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	peer.Handle("task.progress", a.taskProgress)
 	peer.Handle("task.complete", a.taskComplete)
 	peer.Handle("artifact.uploadComplete", a.artifactUploadComplete)
+	peer.Handle("terminal.output", a.terminalOutput)
+	peer.Handle("terminal.closed", a.terminalClosed)
 	if err := peer.Run(r.Context()); err != nil {
 		log.Printf("agent rpc disconnected: %v", err)
 	}
@@ -383,6 +407,84 @@ func (a *App) agentSSHCommand(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"command": command})
 }
 
+func (a *App) webSSHPage(w http.ResponseWriter, r *http.Request) {
+	agent, ok := a.store.GetAgent(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	ticket := a.issueTerminalTicket(agent.ID)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(webSSHHTML(agent.ID, agent.Name, ticket)))
+}
+
+func (a *App) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
+	agentID := r.PathValue("id")
+	if !a.consumeTerminalTicket(agentID, r.URL.Query().Get("ticket")) {
+		http.Error(w, "invalid terminal ticket", http.StatusForbidden)
+		return
+	}
+	agent, ok := a.store.GetAgent(agentID)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if agent.Status != domain.AgentOnline && agent.Status != domain.AgentBusy {
+		http.Error(w, "agent is not online", http.StatusBadRequest)
+		return
+	}
+	session := a.hub.Session(agentID)
+	if session == nil || session.peer == nil {
+		http.Error(w, "agent is not connected", http.StatusBadRequest)
+		return
+	}
+	conn, err := a.upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	sessionID := id("term")
+	bridge := &terminalBridge{conn: conn}
+	a.termMu.Lock()
+	a.terminals[sessionID] = bridge
+	a.termMu.Unlock()
+	defer func() {
+		a.termMu.Lock()
+		delete(a.terminals, sessionID)
+		a.termMu.Unlock()
+		_ = session.peer.Notify("terminal.close", map[string]string{"session_id": sessionID})
+		_ = conn.Close()
+	}()
+	if err := session.peer.Call(r.Context(), "terminal.open", map[string]any{
+		"session_id": sessionID,
+		"cols":       120,
+		"rows":       32,
+	}, nil); err != nil {
+		message := err.Error()
+		if strings.Contains(message, "method not found") {
+			message = "Agent version does not support WebSSH. Redeploy the agent with the latest binary."
+		}
+		_ = conn.WriteJSON(map[string]string{"type": "error", "data": message})
+		return
+	}
+	for {
+		var msg struct {
+			Type string `json:"type"`
+			Data string `json:"data"`
+			Cols uint16 `json:"cols"`
+			Rows uint16 `json:"rows"`
+		}
+		if err := conn.ReadJSON(&msg); err != nil {
+			return
+		}
+		switch msg.Type {
+		case "input":
+			_ = session.peer.Notify("terminal.input", map[string]string{"session_id": sessionID, "data": msg.Data})
+		case "resize":
+			_ = session.peer.Notify("terminal.resize", map[string]any{"session_id": sessionID, "cols": msg.Cols, "rows": msg.Rows})
+		}
+	}
+}
+
 func (a *App) startRun(ctx context.Context, pipelineID, source string, event domain.TriggerEvent) (domain.Run, error) {
 	pipeline, ok := a.store.GetPipeline(pipelineID)
 	if !ok {
@@ -509,6 +611,61 @@ func (a *App) taskComplete(_ context.Context, params json.RawMessage) (any, *jso
 
 func (a *App) artifactUploadComplete(_ context.Context, _ json.RawMessage) (any, *jsonrpc.Error) {
 	return map[string]bool{"ok": true}, nil
+}
+
+func (a *App) terminalOutput(_ context.Context, params json.RawMessage) (any, *jsonrpc.Error) {
+	var msg struct {
+		SessionID string `json:"session_id"`
+		Data      string `json:"data"`
+	}
+	_ = json.Unmarshal(params, &msg)
+	bridge := a.terminal(msg.SessionID)
+	if bridge == nil {
+		return map[string]bool{"ok": false}, nil
+	}
+	bridge.mu.Lock()
+	_ = bridge.conn.WriteJSON(map[string]string{"type": "output", "data": msg.Data})
+	bridge.mu.Unlock()
+	return map[string]bool{"ok": true}, nil
+}
+
+func (a *App) terminalClosed(_ context.Context, params json.RawMessage) (any, *jsonrpc.Error) {
+	var msg struct {
+		SessionID string `json:"session_id"`
+	}
+	_ = json.Unmarshal(params, &msg)
+	bridge := a.terminal(msg.SessionID)
+	if bridge != nil {
+		bridge.mu.Lock()
+		_ = bridge.conn.WriteJSON(map[string]string{"type": "closed"})
+		bridge.mu.Unlock()
+	}
+	return map[string]bool{"ok": true}, nil
+}
+
+func (a *App) terminal(sessionID string) *terminalBridge {
+	a.termMu.Lock()
+	defer a.termMu.Unlock()
+	return a.terminals[sessionID]
+}
+
+func (a *App) issueTerminalTicket(agentID string) string {
+	ticket := token()
+	a.termMu.Lock()
+	a.tickets[ticket] = terminalTicket{AgentID: agentID, ExpiresAt: a.cfg.Now().Add(2 * time.Minute)}
+	a.termMu.Unlock()
+	return ticket
+}
+
+func (a *App) consumeTerminalTicket(agentID, ticket string) bool {
+	if ticket == "" {
+		return false
+	}
+	a.termMu.Lock()
+	defer a.termMu.Unlock()
+	item, ok := a.tickets[ticket]
+	delete(a.tickets, ticket)
+	return ok && item.AgentID == agentID && a.cfg.Now().Before(item.ExpiresAt)
 }
 
 func (a *App) deployScript(r *http.Request, agent domain.AgentInfo) string {
@@ -652,6 +809,59 @@ func safeFilename(value string) string {
 	return b.String()
 }
 
+func webSSHHTML(agentID, agentName, ticket string) string {
+	agentID = html.EscapeString(agentID)
+	agentName = html.EscapeString(agentName)
+	ticket = html.EscapeString(ticket)
+	return `<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Haiwo WebSSH - ` + agentName + `</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
+    <style>
+      *{box-sizing:border-box}body{margin:0;height:100vh;background:#0c0c0c;color:#f3f2f1;font-family:"Segoe UI",sans-serif;display:grid;grid-template-rows:auto 1fr}.bar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;background:#1f1f1f;border-bottom:1px solid #333}.status{color:#a6e22e;font-size:12px}#term{min-height:0;padding:8px}.xterm{height:100%}
+    </style>
+  </head>
+  <body>
+    <div class="bar"><strong>Haiwo WebSSH - ` + agentName + `</strong><span id="status" class="status">connecting</span></div>
+    <div id="term"></div>
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.8.0/lib/addon-fit.min.js"></script>
+    <script>
+      const status = document.getElementById("status");
+      const term = new Terminal({ cursorBlink: true, convertEol: true, fontFamily: "Cascadia Mono, Consolas, monospace", fontSize: 14 });
+      const fitAddon = new FitAddon.FitAddon();
+      term.loadAddon(fitAddon);
+      term.open(document.getElementById("term"));
+      fitAddon.fit();
+      const scheme = location.protocol === "https:" ? "wss" : "ws";
+      const ws = new WebSocket(scheme + "://" + location.host + "/api/agents/` + agentID + `/terminal/ws?ticket=` + ticket + `");
+      function resize() {
+        fitAddon.fit();
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+      }
+      ws.onopen = () => { status.textContent = "connected"; term.focus(); };
+      ws.onclose = () => { status.textContent = "closed"; };
+      ws.onerror = () => { status.textContent = "error"; };
+      ws.onmessage = event => {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "output") term.write(msg.data || "");
+        if (msg.type === "error") term.writeln("\r\n" + msg.data);
+        if (msg.type === "closed") status.textContent = "closed";
+      };
+      term.onData(data => {
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "input", data }));
+      });
+      window.addEventListener("resize", resize);
+      ws.addEventListener("open", resize);
+      window.addEventListener("beforeunload", () => ws.close());
+    </script>
+  </body>
+</html>`
+}
+
 func normalizeBaseURL(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -698,6 +908,22 @@ func baseURLFromReverseSSHURL(value string) string {
 		value = "http://" + strings.TrimPrefix(value, "ws://")
 	}
 	return normalizeBaseURL(value)
+}
+
+func checkWebSocketOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	host := r.Host
+	if forwardedHost := r.Header.Get("X-Forwarded-Host"); forwardedHost != "" {
+		host = forwardedHost
+	}
+	return strings.EqualFold(parsed.Host, host)
 }
 
 type Store struct {
@@ -1206,6 +1432,12 @@ func (h *AgentHub) Delete(agentID string) {
 	if session != nil && session.peer != nil {
 		_ = session.peer.Close()
 	}
+}
+
+func (h *AgentHub) Session(agentID string) *AgentSession {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.sessions[agentID]
 }
 
 func (h *AgentHub) Match(ids, labels []string) []*AgentSession {

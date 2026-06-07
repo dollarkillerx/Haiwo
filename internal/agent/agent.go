@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
 	"github.com/haiwo-ci/haiwo/internal/domain"
 	"github.com/haiwo-ci/haiwo/internal/jsonrpc"
@@ -40,13 +41,20 @@ type Agent struct {
 	peer    *jsonrpc.Peer
 	mu      sync.Mutex
 	running map[string]context.CancelFunc
+	terms   map[string]*terminalSession
+}
+
+type terminalSession struct {
+	cmd  *exec.Cmd
+	file *os.File
+	mu   sync.Mutex
 }
 
 func New(cfg Config) *Agent {
 	if cfg.MaxRunning <= 0 {
 		cfg.MaxRunning = 1
 	}
-	return &Agent{cfg: cfg, running: map[string]context.CancelFunc{}}
+	return &Agent{cfg: cfg, running: map[string]context.CancelFunc{}, terms: map[string]*terminalSession{}}
 }
 
 func (a *Agent) Run(ctx context.Context) error {
@@ -59,6 +67,10 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.peer = jsonrpc.NewPeer(conn)
 	a.peer.Handle("task.run", a.handleTaskRun)
 	a.peer.Handle("task.cancel", a.handleTaskCancel)
+	a.peer.Handle("terminal.open", a.handleTerminalOpen)
+	a.peer.Handle("terminal.input", a.handleTerminalInput)
+	a.peer.Handle("terminal.resize", a.handleTerminalResize)
+	a.peer.Handle("terminal.close", a.handleTerminalClose)
 	a.peer.Handle("agent.ping", func(context.Context, json.RawMessage) (any, *jsonrpc.Error) {
 		return map[string]string{"status": "ok"}, nil
 	})
@@ -186,6 +198,158 @@ func (a *Agent) handleUpdateConfig(_ context.Context, params json.RawMessage) (a
 	}
 	a.mu.Unlock()
 	return a.info(), nil
+}
+
+func (a *Agent) handleTerminalOpen(ctx context.Context, params json.RawMessage) (any, *jsonrpc.Error) {
+	var req struct {
+		SessionID string `json:"session_id"`
+		Shell     string `json:"shell"`
+		Cols      uint16 `json:"cols"`
+		Rows      uint16 `json:"rows"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, &jsonrpc.Error{Code: -32602, Message: err.Error()}
+	}
+	if req.SessionID == "" {
+		return nil, &jsonrpc.Error{Code: -32602, Message: "session_id is required"}
+	}
+	shell := req.Shell
+	if shell == "" {
+		shell = defaultShell()
+	}
+	args := []string{}
+	switch filepath.Base(shell) {
+	case "bash", "zsh":
+		args = append(args, "-l")
+	}
+	cmd := exec.CommandContext(ctx, shell, args...)
+	cmd.Dir = a.cfg.WorkDir
+	if cmd.Dir == "" {
+		cmd.Dir = "."
+	}
+	f, err := pty.Start(cmd)
+	if err != nil {
+		return nil, &jsonrpc.Error{Code: -32000, Message: err.Error()}
+	}
+	if req.Cols == 0 {
+		req.Cols = 100
+	}
+	if req.Rows == 0 {
+		req.Rows = 30
+	}
+	_ = pty.Setsize(f, &pty.Winsize{Cols: req.Cols, Rows: req.Rows})
+
+	session := &terminalSession{cmd: cmd, file: f}
+	a.mu.Lock()
+	a.terms[req.SessionID] = session
+	a.mu.Unlock()
+
+	go a.streamTerminal(req.SessionID, session)
+	return map[string]bool{"opened": true}, nil
+}
+
+func (a *Agent) handleTerminalInput(_ context.Context, params json.RawMessage) (any, *jsonrpc.Error) {
+	var req struct {
+		SessionID string `json:"session_id"`
+		Data      string `json:"data"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, &jsonrpc.Error{Code: -32602, Message: err.Error()}
+	}
+	session := a.terminal(req.SessionID)
+	if session == nil {
+		return nil, &jsonrpc.Error{Code: -32004, Message: "terminal session not found"}
+	}
+	session.mu.Lock()
+	_, err := session.file.Write([]byte(req.Data))
+	session.mu.Unlock()
+	if err != nil {
+		return nil, &jsonrpc.Error{Code: -32000, Message: err.Error()}
+	}
+	return map[string]bool{"ok": true}, nil
+}
+
+func (a *Agent) handleTerminalResize(_ context.Context, params json.RawMessage) (any, *jsonrpc.Error) {
+	var req struct {
+		SessionID string `json:"session_id"`
+		Cols      uint16 `json:"cols"`
+		Rows      uint16 `json:"rows"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, &jsonrpc.Error{Code: -32602, Message: err.Error()}
+	}
+	session := a.terminal(req.SessionID)
+	if session == nil {
+		return nil, &jsonrpc.Error{Code: -32004, Message: "terminal session not found"}
+	}
+	if req.Cols == 0 || req.Rows == 0 {
+		return map[string]bool{"ok": true}, nil
+	}
+	if err := pty.Setsize(session.file, &pty.Winsize{Cols: req.Cols, Rows: req.Rows}); err != nil {
+		return nil, &jsonrpc.Error{Code: -32000, Message: err.Error()}
+	}
+	return map[string]bool{"ok": true}, nil
+}
+
+func (a *Agent) handleTerminalClose(_ context.Context, params json.RawMessage) (any, *jsonrpc.Error) {
+	var req struct {
+		SessionID string `json:"session_id"`
+	}
+	_ = json.Unmarshal(params, &req)
+	a.closeTerminal(req.SessionID)
+	return map[string]bool{"closed": true}, nil
+}
+
+func (a *Agent) streamTerminal(sessionID string, session *terminalSession) {
+	buf := make([]byte, 4096)
+	for {
+		n, err := session.file.Read(buf)
+		if n > 0 && a.peer != nil {
+			_ = a.peer.Notify("terminal.output", map[string]string{
+				"session_id": sessionID,
+				"data":       string(buf[:n]),
+			})
+		}
+		if err != nil {
+			a.closeTerminal(sessionID)
+			if a.peer != nil {
+				_ = a.peer.Notify("terminal.closed", map[string]string{"session_id": sessionID})
+			}
+			return
+		}
+	}
+}
+
+func (a *Agent) terminal(sessionID string) *terminalSession {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.terms[sessionID]
+}
+
+func (a *Agent) closeTerminal(sessionID string) {
+	a.mu.Lock()
+	session := a.terms[sessionID]
+	delete(a.terms, sessionID)
+	a.mu.Unlock()
+	if session == nil {
+		return
+	}
+	_ = session.file.Close()
+	if session.cmd.Process != nil {
+		_ = session.cmd.Process.Kill()
+	}
+}
+
+func defaultShell() string {
+	for _, shell := range []string{os.Getenv("SHELL"), "/bin/bash", "/bin/sh"} {
+		if shell == "" {
+			continue
+		}
+		if _, err := os.Stat(shell); err == nil {
+			return shell
+		}
+	}
+	return "/bin/sh"
 }
 
 func (a *Agent) execute(ctx context.Context, task domain.TaskPayload) domain.TaskComplete {
