@@ -471,6 +471,16 @@ button {
   margin: 0 -16px 14px;
 }
 
+.compact-filter {
+  width: min(320px, 42vw);
+  min-width: 220px;
+  margin: 0;
+}
+
+.compact-filter select {
+  min-height: 36px;
+}
+
 label {
   display: grid;
   gap: 6px;
@@ -1055,7 +1065,14 @@ tbody tr:hover {
   }
 
   .panel-header {
+    align-items: stretch;
+    flex-direction: column;
     padding: 12px 13px;
+  }
+
+  .compact-filter {
+    width: 100%;
+    min-width: 0;
   }
 
   .form {

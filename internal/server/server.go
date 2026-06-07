@@ -1111,6 +1111,9 @@ func (s *Store) AgentNameExists(name string) bool {
 func (s *Store) SaveRun(v domain.Run) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if existing, ok := s.runs[v.ID]; ok && v.Metadata == nil {
+		v.Metadata = existing.Metadata
+	}
 	s.runs[v.ID] = v
 	if s.db != nil {
 		metadata, err := json.Marshal(v.Metadata)

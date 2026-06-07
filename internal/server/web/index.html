@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Haiwo CI/CD</title>
-    <link rel="stylesheet" href="/styles.css?v=202606071730" />
+    <link rel="stylesheet" href="/styles.css?v=202606071745" />
   </head>
   <body>
     <aside class="sidebar">
@@ -197,25 +197,18 @@
       </section>
 
       <section class="view hidden" id="runs-view">
-        <div class="grid two">
-          <div id="run-filter" class="panel form">
-            <div class="panel-header">
-              <div>
-                <h3 data-i18n="run.historyFilter">Run History</h3>
-                <p data-i18n="run.historyFilterHint">Select a pipeline to inspect previous executions.</p>
-              </div>
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h3 data-i18n="nav.runs">Runs</h3>
+              <p data-i18n="run.listHint">Execution records are polled every five seconds.</p>
             </div>
-            <label><span data-i18n="field.pipeline">Pipeline</span><select id="run-pipeline-filter"></select></label>
+            <label class="compact-filter">
+              <span data-i18n="field.pipeline">Pipeline</span>
+              <select id="run-pipeline-filter"></select>
+            </label>
           </div>
-          <div class="panel">
-            <div class="panel-header">
-              <div>
-                <h3 data-i18n="nav.runs">Runs</h3>
-                <p data-i18n="run.listHint">Execution records are polled every five seconds.</p>
-              </div>
-            </div>
-            <div id="runs-table" class="table"></div>
-          </div>
+          <div id="runs-table" class="table"></div>
         </div>
       </section>
 
@@ -280,6 +273,6 @@
       </section>
     </main>
 
-    <script src="/app.js?v=202606071730"></script>
+    <script src="/app.js?v=202606071745"></script>
   </body>
 </html>

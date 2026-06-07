@@ -185,6 +185,7 @@ const translations = {
     "run.error": "Error",
     "run.logs": "Logs",
     "run.noLogs": "No logs recorded yet.",
+    "run.missingFailureLogs": "This run failed before error details were saved. Trigger it again to capture the exact failure after the logging fix.",
   },
   zh: {
     "brand.subtitle": "交付控制平面",
@@ -362,6 +363,7 @@ const translations = {
     "run.error": "错误",
     "run.logs": "日志",
     "run.noLogs": "暂无日志记录。",
+    "run.missingFailureLogs": "这次运行失败时没有保存错误详情。修复后重新触发一次即可记录准确失败原因。",
   },
   ja: {
     "brand.subtitle": "デリバリー制御プレーン",
@@ -539,6 +541,7 @@ const translations = {
     "run.error": "エラー",
     "run.logs": "ログ",
     "run.noLogs": "ログはまだ記録されていません。",
+    "run.missingFailureLogs": "この実行はエラー詳細が保存される前に失敗しました。修正後に再実行すると正確な原因を記録できます。",
   },
 };
 
@@ -1111,6 +1114,7 @@ function runDetails() {
   const metadata = run.metadata || {};
   const logs = metadata.logs || "";
   const error = metadata.error || "";
+  const logText = logs || (isFailedRun(run) ? t("run.missingFailureLogs") : t("run.noLogs"));
   return `<div class="run-details">
     <div class="panel-header">
       <div>
@@ -1120,8 +1124,12 @@ function runDetails() {
     </div>
     ${error ? `<div class="run-error"><strong>${escapeHTML(t("run.error"))}</strong><span>${escapeHTML(error)}</span></div>` : ""}
     <div class="run-log-title">${escapeHTML(t("run.logs"))}</div>
-    <pre class="run-log">${escapeHTML(logs || t("run.noLogs"))}</pre>
+    <pre class="run-log">${escapeHTML(logText)}</pre>
   </div>`;
+}
+
+function isFailedRun(run) {
+  return run.status === "failed" || run.status === "rollback_failed";
 }
 
 function table(headers, rows, emptyText) {
