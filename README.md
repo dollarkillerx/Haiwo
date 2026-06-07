@@ -1,8 +1,10 @@
 # Haiwo
 
-Haiwo is a Go-based CI/CD MVP with a central server, pull-based agents, JSON-RPC communication, webhook/schedule/manual triggers, pipeline orchestration, and MySQL/PostgreSQL backup and restore jobs.
+![Haiwo logo](internal/server/web/logo.png)
 
-The current implementation is an MVP scaffold. Runtime state is still stored in memory, but the database schema is now defined as GORM models and created with `AutoMigrate`.
+Haiwo is a Go-based CI/CD MVP with a central server, pull-based agents, JSON-RPC communication, webhook/schedule/manual triggers, pipeline orchestration, and code rollback history.
+
+The current implementation is an MVP scaffold. When Postgres is enabled, projects, pipelines, triggers, agents, runs, and settings are persisted through GORM models created with `AutoMigrate`.
 
 ## 1. Design Document
 
@@ -10,13 +12,12 @@ The current implementation is an MVP scaffold. Runtime state is still stored in 
 
 Haiwo is designed to provide a lightweight CI/CD control plane that can:
 
-- run command, checkout, backup, restore, and rollback jobs on remote agents
+- run command, checkout, deploy, and rollback jobs on remote agents
 - trigger pipelines manually, by schedule, or from GitHub/GitLab/Gitea webhook events
 - match triggers by branch, comment, or branch + comment
 - execute jobs on selected agents by ID or label
 - support single-agent, parallel multi-agent, and chained multi-agent execution
-- record run history, deployment metadata, and database backup metadata
-- support MySQL and PostgreSQL backup/restore through agent-side database clients
+- record run history and deployment metadata
 
 ### 1.2 Architecture
 
@@ -27,15 +28,15 @@ GitHub/GitLab/Gitea
         v
 Haiwo Server  <---- JSON-RPC 2.0 over WebSocket ----  Haiwo Agent
         |                                                |
-        | REST API + embedded Web UI                     | shell/git/db tools
+        | REST API + embedded Web UI                     | shell/git tools
         v                                                v
-GORM AutoMigrate schema                          target host / database
+GORM AutoMigrate schema                          target host
 ```
 
 Server responsibilities:
 
 - serve the embedded web console at `/`
-- expose REST APIs for projects, pipelines, runs, triggers, agents, databases, and backups
+- expose REST APIs for projects, pipelines, runs, triggers, agents, and settings
 - accept GitHub/GitLab/Gitea webhook events
 - match triggers and create pipeline runs
 - orchestrate stages and jobs
@@ -49,7 +50,13 @@ Agent responsibilities:
 - keep heartbeat status updated
 - execute server-dispatched tasks
 - stream logs and completion status back to the server
-- run database backup/restore commands locally on the agent machine
+
+Agent management:
+
+- agents can be created from the web console with a name, labels, and concurrency; SSH entry metadata is enabled by default
+- the console generates a deployment script containing `HAIWO_AGENT_ID`, `HAIWO_AGENT_TOKEN`, server WebSocket URL, labels, and SSH-related environment variables
+- direct SSH metadata can produce an `ssh` command for reachable hosts
+- reverse SSH over WebSocket is represented as configuration in this MVP; Settings stores only the public `http://` or `https://` base URL, and Haiwo generates the fixed `/ssh/agent` WebSocket path
 
 ### 1.3 Communication Model
 
@@ -64,9 +71,11 @@ GET /rpc/agent/ws
 Authentication:
 
 - Agent sends `Authorization: Bearer <token>`.
-- On the server, the token is configured by `[AgentConfiguration].Token` in `configs/config.toml`.
-- On the agent, the same token is configured by `HAIWO_AGENT_TOKEN`.
+- MVP keeps `[AgentConfiguration].Token` in `configs/config.toml` as a development fallback token.
+- Production-style agents should be created in the web console. Each created agent gets its own token.
+- On the agent, the token is configured by `HAIWO_AGENT_TOKEN`.
 - The server binds the WebSocket connection to the registered agent identity.
+- If a per-agent token is used, the server only accepts registration for that token's agent ID.
 
 Agent-to-server JSON-RPC methods:
 
@@ -74,12 +83,12 @@ Agent-to-server JSON-RPC methods:
 - `agent.heartbeat`: report labels, status, version, and current load.
 - `task.log`: stream stdout/stderr lines.
 - `task.progress`: report task progress.
-- `task.complete`: report final job status, exit code, artifacts, and backup ID.
+- `task.complete`: report final job status, exit code, and artifacts.
 - `artifact.uploadComplete`: report artifact upload completion.
 
 Server-to-agent JSON-RPC methods:
 
-- `task.run`: execute a command, checkout, backup, restore, or rollback task.
+- `task.run`: execute a command, checkout, deploy, or rollback task.
 - `task.cancel`: cancel a running task.
 - `agent.ping`: check connection health.
 - `agent.updateConfig`: update labels, capacity, or work directory.
@@ -108,10 +117,7 @@ Job:
 
 - `command`
 - `git_checkout`
-- `db_backup`
-- `db_restore`
 - `rollback_code`
-- `rollback_db`
 
 Agent selection:
 
@@ -129,10 +135,6 @@ Run:
 - immutable execution history record
 - tracks source, ref, comment, status, timestamps, and metadata
 - rollback creates a new run instead of modifying old history
-
-Backup:
-
-- records backup ID, database type, database name, environment, path, checksum, agent, run, job, and creation time
 
 ### 1.5 Trigger Design
 
@@ -155,85 +157,47 @@ Trigger matching supports:
 - comment pattern, for example `/deploy prod`
 - branch + comment together, for example only `main` branch can run `/deploy prod`
 
-### 1.6 Database Backup And Restore
+### 1.6 Operational Boundary
 
-MVP supports:
-
-- MySQL
-- PostgreSQL
-
-Database target fields:
-
-- `type`: `mysql` or `postgresql`
-- `host`
-- `port`
-- `database`
-- `username`
-- `password`
-- `password_secret_id`
-- `extra_options`
-- `environment`
-- `allowed_agent_labels`
-- `backup_format`
-- `confirm`
-
-MySQL backup:
-
-```text
-mysqldump --single-transaction --routines --triggers --events
-```
-
-MySQL restore:
-
-```text
-mysql < backup.sql.gz
-```
-
-PostgreSQL backup:
-
-```text
-pg_dump -Fc
-```
-
-PostgreSQL restore:
-
-```text
-pg_restore --clean --if-exists
-```
-
-Production restore protection:
-
-- if `database_target.environment == "prod"`, restore requires `confirm=true`
+Haiwo focuses on code delivery, agent execution, trigger matching, run history, and code rollback. Data-layer operational work is handled manually outside Haiwo.
 
 ### 1.7 Frontend Design
 
 The web console is embedded into the server binary and served from `/`.
 
+The UI uses a Microsoft Fluent / Azure Portal inspired visual style: Segoe UI typography, neutral surfaces, Microsoft blue accents, compact command buttons, and thin bordered cards.
+
 Implemented screens:
 
 - Overview dashboard
-- Chinese and English language switch
+- Chinese, English, and Japanese language switch
 - password-protected login page
 - Projects
-- Pipelines
+- Pipelines with option-based creation for a simple stage/job
 - Runs
 - Agents
-- Backups
+- Settings
 
 The frontend is intentionally dependency-free for the MVP:
 
 - `internal/server/web/index.html`
 - `internal/server/web/styles.css`
 - `internal/server/web/app.js`
+- `internal/server/web/logo.png`
+
+Brand asset:
+
+- The Haiwo logo is served as `/logo.png`.
+- The same logo is used by the password login page and the main console sidebar.
 
 ### 1.8 Current MVP Limits
 
-- Runtime state is in memory.
-- GORM schema exists, but the store is not yet wired to Postgres.
+- Runtime state falls back to memory when Postgres is disabled.
+- When Postgres is enabled, core control-plane records are persisted and reloaded on server startup.
 - Migrations use GORM `AutoMigrate`; SQL migration files are not used.
 - Secrets are modeled but not yet encrypted or persisted.
-- Web UI supports common MVP operations, not full trigger/database/rollback editing yet.
-- Backup files are stored on the agent local filesystem.
+- Web UI supports common MVP operations, not full rollback editing yet.
+- Pipeline creation supports manual, push branch, push commit-message, and tag triggers plus ordered Agent command steps.
 - Git provider API status updates are not implemented yet.
 
 ## 2. Usage Document
@@ -245,15 +209,16 @@ Required:
 - Go 1.26+
 - PostgreSQL, when `PostgresConfiguration.Enabled = true`
 
-Required on agent machines for database jobs:
-
-- MySQL: `mysqldump` and `mysql`
-- PostgreSQL: `pg_dump` and `pg_restore`
-
 ### 2.2 Run Server
 
 ```sh
 go run ./cmd/server -c config -cPath ./,./configs/
+```
+
+Or use Make:
+
+```sh
+make dev
 ```
 
 Default server address:
@@ -270,9 +235,20 @@ http://localhost:8080/
 
 ### 2.3 Run Agent
 
+Recommended workflow:
+
+1. Open the web console.
+2. Go to Agents.
+3. If reverse SSH is needed, go to Settings and configure the public `http://` or `https://` Server URL.
+4. Add an agent with a name, label multi-select, and concurrency. SSH entry metadata is enabled by default.
+5. Copy the generated deployment script.
+6. Put the built `haiwo-agent` binary on the target machine and run the script.
+
+Local development fallback:
+
 ```sh
 HAIWO_AGENT_ID=local-agent \
-HAIWO_AGENT_LABELS=build,deploy,db,staging \
+HAIWO_AGENT_LABELS=build,deploy,staging \
 go run ./cmd/agent
 ```
 
@@ -282,7 +258,39 @@ The agent connects to:
 ws://localhost:8080/rpc/agent/ws
 ```
 
-### 2.4 Configuration
+Or use Make:
+
+```sh
+make dev-agent
+```
+
+### 2.4 Docker Compose
+
+Build the image:
+
+```sh
+make img-build
+```
+
+Start Postgres and the Haiwo server:
+
+```sh
+make up
+```
+
+Start Postgres, server, and the optional local compose agent:
+
+```sh
+make up-agent
+```
+
+Stop services:
+
+```sh
+make down
+```
+
+### 2.5 Configuration
 
 Haiwo uses TOML configuration. The default file is:
 
@@ -290,7 +298,7 @@ Haiwo uses TOML configuration. The default file is:
 configs/config.toml
 ```
 
-The server and migrate command follow the same flag style:
+The server uses this flag style:
 
 ```sh
 -c config -cPath ./,./configs/
@@ -349,22 +357,29 @@ Agent environment variables:
 | `HAIWO_AGENT_TOKEN` | `dev-agent-token` | Shared token sent to the server |
 | `HAIWO_AGENT_ID` | `local-agent` | Agent ID |
 | `HAIWO_AGENT_NAME` | `local-agent` | Human-readable agent name |
-| `HAIWO_AGENT_LABELS` | `build,deploy,db,staging` | Comma-separated labels for scheduling |
-| `HAIWO_AGENT_WORKDIR` | `.haiwo-agent` | Agent task and backup workspace |
+| `HAIWO_AGENT_LABELS` | `build,deploy,staging` | Comma-separated labels for scheduling |
+| `HAIWO_AGENT_WORKDIR` | `.haiwo-agent` | Agent task workspace |
+| `HAIWO_AGENT_MAX_RUNNING` | `1` | Maximum concurrent tasks accepted by the agent |
+| `HAIWO_AGENT_SSH_ENABLED` | `false` | Marks the agent as SSH-enabled in the control plane |
+| `HAIWO_AGENT_REVERSE_SSH_URL` | empty | Optional generated reverse SSH endpoint, for example `wss://haiwo.example.com/ssh/agent` |
 
-### 2.5 Web Console Workflow
+### 2.6 Web Console Workflow
 
 1. Start the server.
 2. Open `http://localhost:8080/`.
 3. Log in with `[WebConfiguration].Password`.
-4. Switch language with `EN` / `中` in the top bar when needed.
-5. Start at least one agent.
-6. Create a project in the Projects screen.
-7. Create a pipeline in the Pipelines screen using JSON.
-8. Start a run in the Runs screen.
-9. Watch run status, agent status, and backup records refresh automatically.
+4. Switch language with `EN` / `中` / `日` in the top bar when needed.
+5. Configure the public Server URL in Settings if agents need reverse SSH metadata. Haiwo automatically generates `/ssh/agent`.
+6. Add an agent in the Agents screen and copy its deployment script.
+7. Start at least one agent with that script.
+8. Create a project in the Projects screen.
+9. Create a pipeline in the Pipelines screen using the option-based form.
+   Choose a trigger: manual only, push branch, push branch with commit-message text, or tag name.
+   Add one or more ordered steps. Each step selects one Agent and command content; steps run sequentially.
+10. Start a run in the Runs screen, or click `Run` in the Pipelines list to trigger the pipeline with the project's default branch.
+11. Watch run status and agent status refresh automatically.
 
-### 2.6 Database Migration
+### 2.7 Database AutoMigrate
 
 Enable Postgres in `configs/config.toml`:
 
@@ -381,13 +396,7 @@ TimeZone = "UTC"
 LogMode = "console"
 ```
 
-Run GORM AutoMigrate without starting the server:
-
-```sh
-go run ./cmd/migrate -c config -cPath ./,./configs/
-```
-
-Or start the server with database enabled; it will run AutoMigrate during startup:
+Start the server with database enabled; it runs GORM `AutoMigrate` during startup:
 
 ```sh
 go run ./cmd/server -c config -cPath ./,./configs/
@@ -399,13 +408,13 @@ AutoMigrate models are defined in:
 internal/database/models.go
 ```
 
-The migration entrypoint is:
+The AutoMigrate entrypoint is:
 
 ```text
 internal/database/migrate.go
 ```
 
-### 2.7 API Workflow
+### 2.8 API Workflow
 
 Create a project:
 
@@ -449,28 +458,37 @@ Check one run:
 curl -sS http://localhost:8080/api/runs/RUN_ID
 ```
 
-Check backups:
-
-```sh
-curl -sS http://localhost:8080/api/backups
-```
-
-### 2.8 Pipeline JSON Example
+### 2.9 Pipeline JSON Example
 
 ```json
 {
   "name": "staging deploy",
   "stages": [
     {
-      "name": "deploy",
+      "name": "step-1",
       "jobs": [
         {
-          "id": "deploy",
-          "name": "Deploy service",
+          "id": "step-1-agent-a",
+          "name": "1. agent-a",
           "job_type": "command",
           "agent_mode": "single",
-          "agent_labels": ["deploy", "staging"],
+          "agent_ids": ["agent-a"],
           "commands": ["echo deploy staging"],
+          "timeout_seconds": 300,
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "step-2",
+      "jobs": [
+        {
+          "id": "step-2-agent-b",
+          "name": "2. agent-b",
+          "job_type": "command",
+          "agent_mode": "single",
+          "agent_ids": ["agent-b"],
+          "commands": ["systemctl restart app"],
           "timeout_seconds": 300,
           "required": true
         }
@@ -480,53 +498,23 @@ curl -sS http://localhost:8080/api/backups
 }
 ```
 
-### 2.9 Database Backup Job Example
+Create a push trigger for a pipeline:
 
-```json
-{
-  "id": "backup-prod",
-  "name": "Backup production database",
-  "job_type": "db_backup",
-  "agent_mode": "single",
-  "agent_labels": ["db", "prod"],
-  "database_target": {
-    "type": "mysql",
-    "host": "127.0.0.1",
-    "port": 3306,
-    "database": "app",
-    "username": "root",
-    "password": "secret",
-    "environment": "prod"
-  },
-  "required": true
-}
+```sh
+curl -sS -X POST http://localhost:8080/api/projects/PROJECT_ID/triggers \
+  -H 'content-type: application/json' \
+  -d '{"pipeline_id":"PIPELINE_ID","type":"push","branch_pattern":"main","commit_pattern":"deploy"}'
 ```
 
-### 2.10 Database Restore Job Example
+Create a tag trigger:
 
-```json
-{
-  "id": "restore-prod",
-  "name": "Restore production database",
-  "job_type": "db_restore",
-  "agent_mode": "single",
-  "agent_labels": ["db", "prod"],
-  "backup_id": "bak_20260510120000",
-  "database_target": {
-    "type": "postgresql",
-    "host": "127.0.0.1",
-    "port": 5432,
-    "database": "app",
-    "username": "postgres",
-    "password": "secret",
-    "environment": "prod",
-    "confirm": true
-  },
-  "required": true
-}
+```sh
+curl -sS -X POST http://localhost:8080/api/projects/PROJECT_ID/triggers \
+  -H 'content-type: application/json' \
+  -d '{"pipeline_id":"PIPELINE_ID","type":"tag","tag_pattern":"dev*"}'
 ```
 
-### 2.11 Development Checks
+### 2.10 Development Checks
 
 Run tests:
 
@@ -537,17 +525,11 @@ go test ./...
 Build server and agent:
 
 ```sh
-go build ./cmd/server ./cmd/agent
-```
-
-Build migrate command:
-
-```sh
-go build ./cmd/migrate
+make build
 ```
 
 Format Go code:
 
 ```sh
-gofmt -w cmd internal
+make fmt
 ```

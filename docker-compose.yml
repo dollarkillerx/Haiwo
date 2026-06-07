@@ -1,0 +1,73 @@
+# Haiwo local stack: PostgreSQL + Haiwo server
+# Build image: make img-build
+# Start: make up or docker compose up -d
+#
+# The server mounts configs/config.toml and overrides Postgres host/port through
+# Viper environment variables. Example:
+# PostgresConfiguration.Host -> POSTGRESCONFIGURATION_HOST
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: haiwo-postgres
+    environment:
+      POSTGRES_USER: pacman
+      POSTGRES_PASSWORD: MEB3oZZkpxgA1q4WcA10
+      POSTGRES_DB: pacman
+    ports:
+      - "18432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pacman -d pacman"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  server:
+    image: haiwo/haiwo:latest
+    container_name: haiwo-server
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./configs/config.toml:/app/configs/config.toml:ro
+    environment:
+      POSTGRESCONFIGURATION_ENABLED: "true"
+      POSTGRESCONFIGURATION_HOST: postgres
+      POSTGRESCONFIGURATION_PORT: "5432"
+      POSTGRESCONFIGURATION_USER: pacman
+      POSTGRESCONFIGURATION_PASSWORD: MEB3oZZkpxgA1q4WcA10
+      POSTGRESCONFIGURATION_DBNAME: pacman
+      SERVICECONFIGURATION_ADDR: ":8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  agent:
+    image: haiwo/haiwo:latest
+    container_name: haiwo-agent
+    profiles: ["agent"]
+    command: ["./haiwo-agent"]
+    environment:
+      HAIWO_SERVER_URL: ws://server:8080/rpc/agent/ws
+      HAIWO_AGENT_TOKEN: dev-agent-token
+      HAIWO_AGENT_ID: compose-agent
+      HAIWO_AGENT_NAME: compose-agent
+      HAIWO_AGENT_LABELS: build,deploy,staging
+      HAIWO_AGENT_WORKDIR: /app/.haiwo-agent
+      HAIWO_AGENT_MAX_RUNNING: "1"
+      HAIWO_AGENT_SSH_ENABLED: "true"
+    depends_on:
+      server:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+
+networks:
+  default:
+    name: haiwo-network

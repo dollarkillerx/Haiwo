@@ -9,9 +9,10 @@
   <body>
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-mark">H</div>
+        <div class="brand-logo-card">
+          <img class="brand-logo" src="/logo.png" alt="Haiwo" />
+        </div>
         <div>
-          <h1>Haiwo</h1>
           <p data-i18n="brand.subtitle">Delivery control plane</p>
         </div>
       </div>
@@ -22,7 +23,7 @@
         <button class="nav-item" data-view="pipelines"><span data-i18n="nav.pipelines">Pipelines</span><small data-i18n="nav.pipelinesHint">任务编排</small></button>
         <button class="nav-item" data-view="runs"><span data-i18n="nav.runs">Runs</span><small data-i18n="nav.runsHint">执行历史</small></button>
         <button class="nav-item" data-view="agents"><span data-i18n="nav.agents">Agents</span><small data-i18n="nav.agentsHint">执行节点</small></button>
-        <button class="nav-item" data-view="backups"><span data-i18n="nav.backups">Backups</span><small data-i18n="nav.backupsHint">数据备份</small></button>
+        <button class="nav-item" data-view="settings"><span data-i18n="nav.settings">Settings</span><small data-i18n="nav.settingsHint">系统设置</small></button>
       </nav>
 
       <div class="sidebar-footer">
@@ -45,6 +46,7 @@
           <div class="lang-switch" aria-label="Language">
             <button class="active" type="button" data-lang="en">EN</button>
             <button type="button" data-lang="zh">中</button>
+            <button type="button" data-lang="ja">日</button>
           </div>
           <form method="post" action="/logout">
             <button class="icon-button" type="submit" title="Logout" aria-label="Logout"><span aria-hidden="true">⇥</span></button>
@@ -117,13 +119,14 @@
       </section>
 
       <section class="view hidden" id="projects-view">
-        <div class="grid two">
-          <form id="project-form" class="panel form">
+        <div class="grid create-list">
+          <form id="project-form" class="panel form create-panel hidden" data-create-panel="projects">
             <div class="panel-header">
               <div>
                 <h3 data-i18n="project.create">Create Project</h3>
                 <p data-i18n="project.createHint">Bind a repository to Haiwo.</p>
               </div>
+              <button class="button small" type="button" data-create-cancel="projects" data-i18n="action.cancel">Cancel</button>
             </div>
             <label><span data-i18n="field.name">Name</span><input name="name" required placeholder="payment-service" /></label>
             <label><span data-i18n="field.provider">Provider</span>
@@ -143,6 +146,7 @@
                 <h3 data-i18n="nav.projects">Projects</h3>
                 <p data-i18n="project.listHint">Source repositories registered in the control plane.</p>
               </div>
+              <button class="button small" type="button" data-create-target="projects">+ <span data-i18n="action.add">Add</span></button>
             </div>
             <div id="projects-table" class="table"></div>
           </div>
@@ -150,24 +154,42 @@
       </section>
 
       <section class="view hidden" id="pipelines-view">
-        <div class="grid two wide-form">
-          <form id="pipeline-form" class="panel form">
+        <div class="grid create-list">
+          <form id="pipeline-form" class="panel form create-panel hidden" data-create-panel="pipelines">
             <div class="panel-header">
               <div>
                 <h3 data-i18n="pipeline.create">Create Pipeline</h3>
-                <p data-i18n="pipeline.createHint">Paste a stage and job definition.</p>
+                <p data-i18n="pipeline.createHint">Choose a trigger and add ordered Agent command steps.</p>
               </div>
+              <button class="button small" type="button" data-create-cancel="pipelines" data-i18n="action.cancel">Cancel</button>
             </div>
             <label><span data-i18n="field.project">Project</span><select id="pipeline-project" name="project_id" required></select></label>
-            <label><span data-i18n="field.pipelineJSON">Pipeline JSON</span><textarea name="definition" rows="18" spellcheck="false"></textarea></label>
+            <label><span data-i18n="field.pipelineName">Pipeline Name</span><input name="pipeline_name" required value="staging deploy" /></label>
+            <div class="field-block">
+              <span data-i18n="field.triggerType">Trigger</span>
+              <select name="trigger_type" id="pipeline-trigger-type">
+                <option value="manual" data-i18n="trigger.manual">Manual only</option>
+                <option value="push" data-i18n="trigger.push">Push branch</option>
+                <option value="tag" data-i18n="trigger.tag">Tag name</option>
+              </select>
+            </div>
+            <div id="pipeline-trigger-fields" class="trigger-fields"></div>
+            <div class="field-block">
+              <div class="section-row">
+                <span data-i18n="field.steps">Steps</span>
+                <button class="button small" id="add-pipeline-step" type="button">+ <span data-i18n="action.addStep">Add step</span></button>
+              </div>
+              <div id="pipeline-steps" class="step-list"></div>
+            </div>
             <button class="button primary" type="submit" data-i18n="pipeline.create">Create Pipeline</button>
           </form>
           <div class="panel">
             <div class="panel-header">
               <div>
                 <h3 data-i18n="nav.pipelines">Pipelines</h3>
-                <p data-i18n="pipeline.listHint">Reusable workflows for builds, deploys, backups, and rollbacks.</p>
+                <p data-i18n="pipeline.listHint">Reusable workflows for push, tag, manual runs, and ordered Agent commands.</p>
               </div>
+              <button class="button small" type="button" data-create-target="pipelines">+ <span data-i18n="action.add">Add</span></button>
             </div>
             <div id="pipelines-table" class="table"></div>
           </div>
@@ -201,26 +223,62 @@
       </section>
 
       <section class="view hidden" id="agents-view">
-        <div class="panel">
-          <div class="panel-header">
-            <div>
-              <h3 data-i18n="nav.agents">Agents</h3>
-              <p data-i18n="agent.listHint">Workers connected through JSON-RPC over WebSocket.</p>
+        <div class="grid create-list">
+          <form id="agent-form" class="panel form create-panel hidden" data-create-panel="agents" autocomplete="off">
+            <div class="panel-header">
+              <div>
+                <h3 data-i18n="agent.create">Add Agent</h3>
+                <p data-i18n="agent.createHint">Create an agent identity and deployment script.</p>
+              </div>
+              <button class="button small" type="button" data-create-cancel="agents" data-i18n="action.cancel">Cancel</button>
             </div>
+            <label><span data-i18n="field.name">Name</span><input name="name" required placeholder="prod-deploy-01" /></label>
+            <div class="field-block">
+              <span data-i18n="field.labels">Labels</span>
+              <div class="choice-grid" data-checkbox-group="agent-labels">
+                <label><input type="checkbox" value="build" checked />Build</label>
+                <label><input type="checkbox" value="deploy" checked />Deploy</label>
+                <label><input type="checkbox" value="staging" />Staging</label>
+                <label><input type="checkbox" value="prod" />Prod</label>
+              </div>
+            </div>
+            <label><span data-i18n="field.maxRunning">Concurrency</span><input name="max_running" type="number" min="1" value="1" /></label>
+            <button class="button primary" type="submit" data-i18n="agent.create">Add Agent</button>
+          </form>
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h3 data-i18n="nav.agents">Agents</h3>
+                <p data-i18n="agent.listHint">Workers connected through JSON-RPC over WebSocket.</p>
+              </div>
+              <button class="button small" type="button" data-create-target="agents">+ <span data-i18n="action.add">Add</span></button>
+            </div>
+            <div id="agents-table" class="table"></div>
           </div>
-          <div id="agents-table" class="table"></div>
         </div>
       </section>
 
-      <section class="view hidden" id="backups-view">
-        <div class="panel">
-          <div class="panel-header">
-            <div>
-              <h3 data-i18n="nav.backups">Backups</h3>
-              <p data-i18n="backup.listHint">Database backup artifacts created by agent jobs.</p>
+      <section class="view hidden" id="settings-view">
+        <div class="grid two">
+          <form id="settings-form" class="panel form">
+            <div class="panel-header">
+              <div>
+                <h3 data-i18n="settings.title">Haiwo Settings</h3>
+                <p data-i18n="settings.hint">Shared system settings used by generated deployment scripts.</p>
+              </div>
             </div>
+            <label><span data-i18n="field.serverBaseURL">Server URL</span><input name="server_base_url" placeholder="https://haiwo.example.com" /></label>
+            <button class="button primary" type="submit" data-i18n="settings.save">Save Settings</button>
+          </form>
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h3 data-i18n="settings.current">Current Settings</h3>
+                <p data-i18n="settings.currentHint">Agents created after saving will inherit the generated reverse SSH endpoint.</p>
+              </div>
+            </div>
+            <div id="settings-summary" class="settings-summary"></div>
           </div>
-          <div id="backups-table" class="table"></div>
         </div>
       </section>
     </main>

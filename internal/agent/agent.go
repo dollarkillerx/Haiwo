@@ -2,10 +2,7 @@ package agent
 
 import (
 	"bufio"
-	"compress/gzip"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,14 +23,16 @@ import (
 )
 
 type Config struct {
-	ServerURL  string
-	Token      string
-	AgentID    string
-	Name       string
-	Version    string
-	Labels     []string
-	WorkDir    string
-	MaxRunning int
+	ServerURL     string
+	Token         string
+	AgentID       string
+	Name          string
+	Version       string
+	Labels        []string
+	WorkDir       string
+	MaxRunning    int
+	SSHEnabled    bool
+	ReverseSSHURL string
 }
 
 type Agent struct {
@@ -107,14 +106,16 @@ func (a *Agent) info() domain.AgentInfo {
 		status = domain.AgentBusy
 	}
 	return domain.AgentInfo{
-		ID:         a.cfg.AgentID,
-		Name:       a.cfg.Name,
-		Version:    a.cfg.Version + " " + runtime.GOOS + "/" + runtime.GOARCH,
-		Labels:     a.cfg.Labels,
-		Status:     status,
-		CurrentRun: running,
-		MaxRunning: a.cfg.MaxRunning,
-		LastSeenAt: time.Now(),
+		ID:            a.cfg.AgentID,
+		Name:          a.cfg.Name,
+		Version:       a.cfg.Version + " " + runtime.GOOS + "/" + runtime.GOARCH,
+		Labels:        a.cfg.Labels,
+		Status:        status,
+		CurrentRun:    running,
+		MaxRunning:    a.cfg.MaxRunning,
+		SSHEnabled:    a.cfg.SSHEnabled,
+		ReverseSSHURL: a.cfg.ReverseSSHURL,
+		LastSeenAt:    time.Now(),
 	}
 }
 
@@ -201,10 +202,6 @@ func (a *Agent) execute(ctx context.Context, task domain.TaskPayload) domain.Tas
 		err = a.runCommands(ctx, task)
 	case domain.JobGitCheckout, domain.JobRollbackCode:
 		err = a.gitCheckout(ctx, task)
-	case domain.JobDBBackup:
-		result.BackupID, result.Artifacts, err = a.backupDatabase(ctx, task)
-	case domain.JobDBRestore, domain.JobRollbackDB:
-		err = a.restoreDatabase(ctx, task)
 	default:
 		err = fmt.Errorf("unsupported job_type %q", task.JobType)
 	}
@@ -261,106 +258,6 @@ func (a *Agent) gitCheckout(ctx context.Context, task domain.TaskPayload) error 
 	return a.runShell(ctx, task, dir, "git checkout "+shellQuote(ref), taskEnv(task))
 }
 
-func (a *Agent) backupDatabase(ctx context.Context, task domain.TaskPayload) (string, map[string]string, error) {
-	db := task.DatabaseTarget
-	if db == nil {
-		return "", nil, errors.New("database_target is required")
-	}
-	backupID := "bak_" + time.Now().Format("20060102150405")
-	dir := filepath.Join(a.cfg.WorkDir, "backups", backupID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", nil, err
-	}
-	switch db.Type {
-	case domain.DatabaseMySQL:
-		path := filepath.Join(dir, db.Database+".sql.gz")
-		err := a.mysqlDump(ctx, task, *db, path)
-		return backupID, artifact(path), err
-	case domain.DatabasePostgreSQL:
-		path := filepath.Join(dir, db.Database+".dump")
-		err := a.pgDump(ctx, task, *db, path)
-		return backupID, artifact(path), err
-	default:
-		return "", nil, fmt.Errorf("unsupported database type %q", db.Type)
-	}
-}
-
-func (a *Agent) restoreDatabase(ctx context.Context, task domain.TaskPayload) error {
-	db := task.DatabaseTarget
-	if db == nil {
-		return errors.New("database_target is required")
-	}
-	if db.Environment == "prod" && !db.Confirm {
-		return errors.New("production restore requires confirm=true")
-	}
-	if task.BackupID == "" {
-		return errors.New("backup_id is required")
-	}
-	backupDir := filepath.Join(a.cfg.WorkDir, "backups", task.BackupID)
-	switch db.Type {
-	case domain.DatabaseMySQL:
-		return a.mysqlRestore(ctx, task, *db, filepath.Join(backupDir, db.Database+".sql.gz"))
-	case domain.DatabasePostgreSQL:
-		return a.pgRestore(ctx, task, *db, filepath.Join(backupDir, db.Database+".dump"))
-	default:
-		return fmt.Errorf("unsupported database type %q", db.Type)
-	}
-}
-
-func (a *Agent) mysqlDump(ctx context.Context, task domain.TaskPayload, db domain.DatabaseTarget, path string) error {
-	file, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	gz := gzip.NewWriter(file)
-	defer gz.Close()
-	args := []string{"--single-transaction", "--routines", "--triggers", "--events", "-h", db.Host, "-P", fmt.Sprint(port(db.Port, 3306)), "-u", db.Username, db.Database}
-	cmd := exec.CommandContext(ctx, "mysqldump", args...)
-	cmd.Env = append(os.Environ(), "MYSQL_PWD="+db.Password)
-	cmd.Stdout = gz
-	cmd.Stderr = logWriter{fn: func(line string) { a.sendLog(task, "stderr", line) }}
-	return cmd.Run()
-}
-
-func (a *Agent) mysqlRestore(ctx context.Context, task domain.TaskPayload, db domain.DatabaseTarget, path string) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	gz, err := gzip.NewReader(file)
-	if err != nil {
-		return err
-	}
-	defer gz.Close()
-	args := []string{"-h", db.Host, "-P", fmt.Sprint(port(db.Port, 3306)), "-u", db.Username, db.Database}
-	cmd := exec.CommandContext(ctx, "mysql", args...)
-	cmd.Env = append(os.Environ(), "MYSQL_PWD="+db.Password)
-	cmd.Stdin = gz
-	cmd.Stdout = logWriter{fn: func(line string) { a.sendLog(task, "stdout", line) }}
-	cmd.Stderr = logWriter{fn: func(line string) { a.sendLog(task, "stderr", line) }}
-	return cmd.Run()
-}
-
-func (a *Agent) pgDump(ctx context.Context, task domain.TaskPayload, db domain.DatabaseTarget, path string) error {
-	args := []string{"-Fc", "-h", db.Host, "-p", fmt.Sprint(port(db.Port, 5432)), "-U", db.Username, "-d", db.Database, "-f", path}
-	cmd := exec.CommandContext(ctx, "pg_dump", args...)
-	cmd.Env = append(os.Environ(), "PGPASSWORD="+db.Password)
-	cmd.Stdout = logWriter{fn: func(line string) { a.sendLog(task, "stdout", line) }}
-	cmd.Stderr = logWriter{fn: func(line string) { a.sendLog(task, "stderr", line) }}
-	return cmd.Run()
-}
-
-func (a *Agent) pgRestore(ctx context.Context, task domain.TaskPayload, db domain.DatabaseTarget, path string) error {
-	args := []string{"--clean", "--if-exists", "-h", db.Host, "-p", fmt.Sprint(port(db.Port, 5432)), "-U", db.Username, "-d", db.Database, path}
-	cmd := exec.CommandContext(ctx, "pg_restore", args...)
-	cmd.Env = append(os.Environ(), "PGPASSWORD="+db.Password)
-	cmd.Stdout = logWriter{fn: func(line string) { a.sendLog(task, "stdout", line) }}
-	cmd.Stderr = logWriter{fn: func(line string) { a.sendLog(task, "stderr", line) }}
-	return cmd.Run()
-}
-
 func (a *Agent) runShell(ctx context.Context, task domain.TaskPayload, dir, command string, env []string) error {
 	a.sendLog(task, "stdout", "$ "+command)
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
@@ -408,37 +305,6 @@ func taskEnv(task domain.TaskPayload) []string {
 	return env
 }
 
-func artifact(path string) map[string]string {
-	info, err := os.Stat(path)
-	size := int64(0)
-	if err == nil {
-		size = info.Size()
-	}
-	return map[string]string{
-		"path":     path,
-		"size":     fmt.Sprint(size),
-		"checksum": checksum(path),
-	}
-}
-
-func checksum(path string) string {
-	file, err := os.Open(path)
-	if err != nil {
-		return ""
-	}
-	defer file.Close()
-	h := sha256.New()
-	_, _ = io.Copy(h, file)
-	return hex.EncodeToString(h.Sum(nil))
-}
-
-func port(value, fallback int) int {
-	if value == 0 {
-		return fallback
-	}
-	return value
-}
-
 func exitCode(err error) int {
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
@@ -449,18 +315,4 @@ func exitCode(err error) int {
 
 func shellQuote(v string) string {
 	return "'" + strings.ReplaceAll(v, "'", "'\\''") + "'"
-}
-
-type logWriter struct {
-	fn func(string)
-}
-
-func (w logWriter) Write(p []byte) (int, error) {
-	text := strings.TrimRight(string(p), "\n")
-	if text != "" {
-		for _, line := range strings.Split(text, "\n") {
-			w.fn(line)
-		}
-	}
-	return len(p), nil
 }

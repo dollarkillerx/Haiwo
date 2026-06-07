@@ -10,6 +10,7 @@ import (
 	"github.com/haiwo-ci/haiwo/internal/conf"
 	"github.com/haiwo-ci/haiwo/internal/database"
 	"github.com/haiwo-ci/haiwo/internal/server"
+	"gorm.io/gorm"
 )
 
 func main() {
@@ -22,8 +23,10 @@ func main() {
 		log.Fatal(err)
 	}
 
+	var db *gorm.DB
 	if appConfig.PostgresConfiguration.Enabled {
-		db, err := database.OpenPostgres(appConfig.PostgresConfiguration)
+		var err error
+		db, err = database.OpenPostgres(appConfig.PostgresConfiguration)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -37,6 +40,7 @@ func main() {
 		Addr:        appConfig.ServiceConfiguration.Addr,
 		AgentToken:  appConfig.AgentConfiguration.Token,
 		WebPassword: appConfig.WebConfiguration.Password,
+		DB:          db,
 		Now:         time.Now,
 	}
 

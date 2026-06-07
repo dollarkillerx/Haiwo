@@ -16,15 +16,48 @@ func webhookEvent(headers http.Header, raw map[string]any) domain.TriggerEvent {
 	}
 	ref := refFromRaw(raw)
 	if strings.HasPrefix(ref, "refs/tags/") {
-		return domain.TriggerEvent{Type: "tag", Tag: strings.TrimPrefix(ref, "refs/tags/"), Ref: ref}
+		return domain.TriggerEvent{Type: "tag", Tag: strings.TrimPrefix(ref, "refs/tags/"), Ref: ref, CommitSHA: commitSHAFromRaw(raw), CommitMessage: commitMessageFromRaw(raw)}
 	}
 	if ref != "" {
-		return domain.TriggerEvent{Type: "push", Branch: strings.TrimPrefix(ref, "refs/heads/"), Ref: ref}
+		return domain.TriggerEvent{Type: "push", Branch: strings.TrimPrefix(ref, "refs/heads/"), Ref: ref, CommitSHA: commitSHAFromRaw(raw), CommitMessage: commitMessageFromRaw(raw)}
 	}
 	if ev := headers.Get("X-GitHub-Event"); ev == "issue_comment" || ev == "pull_request_review_comment" {
 		return domain.TriggerEvent{Type: "comment", Comment: nestedString(raw, "comment", "body")}
 	}
 	return domain.TriggerEvent{Type: "webhook"}
+}
+
+func commitSHAFromRaw(raw map[string]any) string {
+	if v, _ := raw["after"].(string); v != "" {
+		return v
+	}
+	if v, _ := raw["checkout_sha"].(string); v != "" {
+		return v
+	}
+	if v := nestedString(raw, "head_commit", "id"); v != "" {
+		return v
+	}
+	if v := nestedString(raw, "commits", "0", "id"); v != "" {
+		return v
+	}
+	return ""
+}
+
+func commitMessageFromRaw(raw map[string]any) string {
+	messages := []string{}
+	if v := nestedString(raw, "head_commit", "message"); v != "" {
+		messages = append(messages, v)
+	}
+	if commits, ok := raw["commits"].([]any); ok {
+		for _, item := range commits {
+			if commit, ok := item.(map[string]any); ok {
+				if message, _ := commit["message"].(string); message != "" {
+					messages = append(messages, message)
+				}
+			}
+		}
+	}
+	return strings.Join(messages, "\n")
 }
 
 func refFromRaw(raw map[string]any) string {

@@ -128,6 +128,10 @@ func (p *Peer) Notify(method string, params any) error {
 	return p.write(Request{JSONRPC: "2.0", Method: method, Params: paramsRaw})
 }
 
+func (p *Peer) Close() error {
+	return p.conn.Close()
+}
+
 func (p *Peer) dispatch(ctx context.Context, req Request) {
 	h := p.handlers[req.Method]
 	if h == nil {

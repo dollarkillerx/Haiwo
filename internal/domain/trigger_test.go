@@ -21,3 +21,23 @@ func TestTriggerMatchesWildcardBranch(t *testing.T) {
 		t.Fatal("expected wildcard branch to match")
 	}
 }
+
+func TestTriggerMatchesPushCommitMessage(t *testing.T) {
+	trigger := Trigger{Type: "push", BranchPattern: "main", CommitPattern: "deploy"}
+	if !trigger.Matches(TriggerEvent{Type: "push", Branch: "main", CommitMessage: "deploy api service"}) {
+		t.Fatal("expected commit text to match")
+	}
+	if trigger.Matches(TriggerEvent{Type: "push", Branch: "main", CommitMessage: "fix tests"}) {
+		t.Fatal("expected commit text mismatch")
+	}
+}
+
+func TestTriggerMatchesTagPattern(t *testing.T) {
+	trigger := Trigger{Type: "tag", TagPattern: "dev*"}
+	if !trigger.Matches(TriggerEvent{Type: "tag", Tag: "dev-2026"}) {
+		t.Fatal("expected tag pattern to match")
+	}
+	if trigger.Matches(TriggerEvent{Type: "tag", Tag: "prod-2026"}) {
+		t.Fatal("expected tag pattern mismatch")
+	}
+}

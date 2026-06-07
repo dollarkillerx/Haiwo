@@ -6,11 +6,13 @@ import (
 )
 
 type TriggerEvent struct {
-	Type    string `json:"type"`
-	Branch  string `json:"branch,omitempty"`
-	Tag     string `json:"tag,omitempty"`
-	Comment string `json:"comment,omitempty"`
-	Ref     string `json:"ref,omitempty"`
+	Type          string `json:"type"`
+	Branch        string `json:"branch,omitempty"`
+	Tag           string `json:"tag,omitempty"`
+	Comment       string `json:"comment,omitempty"`
+	CommitMessage string `json:"commit_message,omitempty"`
+	CommitSHA     string `json:"commit_sha,omitempty"`
+	Ref           string `json:"ref,omitempty"`
 }
 
 func (t Trigger) Matches(event TriggerEvent) bool {
@@ -35,5 +37,41 @@ func (t Trigger) Matches(event TriggerEvent) bool {
 			return false
 		}
 	}
+	if t.TagPattern != "" {
+		if !matchExactOrGlob(t.TagPattern, event.Tag) {
+			return false
+		}
+	}
+	if t.CommitPattern != "" {
+		if !matchContainsOrGlob(t.CommitPattern, event.CommitMessage) {
+			return false
+		}
+	}
 	return true
+}
+
+func matchExactOrGlob(pattern, value string) bool {
+	if pattern == "" {
+		return true
+	}
+	if hasGlob(pattern) {
+		ok, err := filepath.Match(pattern, value)
+		return err == nil && ok
+	}
+	return pattern == value
+}
+
+func matchContainsOrGlob(pattern, value string) bool {
+	if pattern == "" {
+		return true
+	}
+	if hasGlob(pattern) {
+		ok, err := filepath.Match(pattern, value)
+		return err == nil && ok
+	}
+	return strings.Contains(value, pattern)
+}
+
+func hasGlob(pattern string) bool {
+	return strings.ContainsAny(pattern, "*?[")
 }

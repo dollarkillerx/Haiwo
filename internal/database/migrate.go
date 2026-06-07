@@ -8,10 +8,9 @@ func AutoMigrate(db *gorm.DB) error {
 		&Agent{},
 		&Pipeline{},
 		&Trigger{},
-		&DatabaseTarget{},
 		&Run{},
 		&JobRun{},
 		&TaskLog{},
-		&Backup{},
+		&SystemSetting{},
 	)
 }

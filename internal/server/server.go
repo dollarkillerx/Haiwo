@@ -8,20 +8,24 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
+	dbmodel "github.com/haiwo-ci/haiwo/internal/database"
 	"github.com/haiwo-ci/haiwo/internal/domain"
 	"github.com/haiwo-ci/haiwo/internal/jsonrpc"
 	"github.com/robfig/cron/v3"
+	"gorm.io/gorm"
 )
 
 type Config struct {
 	Addr        string
 	AgentToken  string
 	WebPassword string
+	DB          *gorm.DB
 	Now         func() time.Time
 }
 
@@ -39,7 +43,7 @@ func New(cfg Config) *App {
 	}
 	app := &App{
 		cfg:   cfg,
-		store: NewStore(cfg.Now),
+		store: NewStore(cfg.Now, cfg.DB),
 		cron:  cron.New(),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(*http.Request) bool { return true },
@@ -58,21 +62,26 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /login", a.loginPage)
 	mux.HandleFunc("POST /login", a.login)
 	mux.HandleFunc("POST /logout", a.logout)
+	mux.Handle("GET /logo.png", staticHandler())
 	mux.HandleFunc("GET /rpc/agent/ws", a.handleAgentWS)
 	mux.HandleFunc("GET /api/projects", a.listProjects)
 	mux.HandleFunc("POST /api/projects", a.createProject)
 	mux.HandleFunc("GET /api/pipelines", a.listPipelines)
 	mux.HandleFunc("POST /api/projects/{id}/pipelines", a.createPipeline)
 	mux.HandleFunc("POST /api/projects/{id}/triggers", a.createTrigger)
-	mux.HandleFunc("POST /api/projects/{id}/databases", a.createDatabase)
 	mux.HandleFunc("POST /api/webhooks/{provider}/{project_id}", a.handleWebhook)
 	mux.HandleFunc("GET /api/runs", a.listRuns)
 	mux.HandleFunc("GET /api/runs/{id}", a.getRun)
 	mux.HandleFunc("POST /api/pipelines/{id}/runs", a.startPipelineRun)
 	mux.HandleFunc("POST /api/runs/{id}/cancel", a.cancelRun)
 	mux.HandleFunc("POST /api/runs/{id}/rollback", a.rollbackRun)
-	mux.HandleFunc("GET /api/backups", a.listBackups)
-	mux.HandleFunc("POST /api/backups/{id}/restore", a.restoreBackup)
+	mux.HandleFunc("GET /api/settings", a.getSettings)
+	mux.HandleFunc("PUT /api/settings", a.updateSettings)
+	mux.HandleFunc("POST /api/agents", a.createAgent)
+	mux.HandleFunc("DELETE /api/agents/{id}", a.deleteAgent)
+	mux.HandleFunc("GET /api/agents/{id}/deploy-script", a.agentDeployScript)
+	mux.HandleFunc("GET /api/agents/{id}/deploy.sh", a.agentDeployShell)
+	mux.HandleFunc("GET /api/agents/{id}/ssh-command", a.agentSSHCommand)
 	mux.HandleFunc("GET /api/agents", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, a.store.ListAgents())
 	})
@@ -86,7 +95,10 @@ func (a *App) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	if token == "" {
 		token = r.URL.Query().Get("token")
 	}
-	if a.cfg.AgentToken != "" && token != a.cfg.AgentToken {
+	authAgentID := ""
+	if agent, ok := a.store.GetAgentByToken(token); ok {
+		authAgentID = agent.ID
+	} else if a.cfg.AgentToken == "" || token != a.cfg.AgentToken {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -95,7 +107,7 @@ func (a *App) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	peer := jsonrpc.NewPeer(conn)
-	session := &AgentSession{peer: peer}
+	session := &AgentSession{peer: peer, authAgentID: authAgentID, token: token}
 	peer.Handle("agent.register", a.hub.RegisterHandler(session))
 	peer.Handle("agent.heartbeat", a.hub.HeartbeatHandler(session))
 	peer.Handle("task.log", a.taskLog)
@@ -163,17 +175,6 @@ func (a *App) createTrigger(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, t)
 }
 
-func (a *App) createDatabase(w http.ResponseWriter, r *http.Request) {
-	var db domain.DatabaseTarget
-	if !decodeJSON(w, r, &db) {
-		return
-	}
-	db.ID = id("db")
-	a.store.SaveDatabase(r.PathValue("id"), db)
-	db.Password = ""
-	writeJSON(w, http.StatusCreated, db)
-}
-
 func (a *App) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	var raw map[string]any
 	if !decodeJSON(w, r, &raw) {
@@ -237,8 +238,6 @@ func (a *App) rollbackRun(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		PipelineID string `json:"pipeline_id"`
 		Ref        string `json:"ref"`
-		BackupID   string `json:"backup_id"`
-		Confirm    bool   `json:"confirm"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -249,47 +248,135 @@ func (a *App) rollbackRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	run.Metadata = map[string]string{"source_run_id": r.PathValue("id"), "backup_id": req.BackupID}
+	run.Metadata = map[string]string{"source_run_id": r.PathValue("id")}
 	run.Status = domain.RunRollbackRunning
 	a.store.SaveRun(run)
 	writeJSON(w, http.StatusAccepted, run)
 }
 
-func (a *App) listBackups(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, a.store.ListBackups())
-}
-
-func (a *App) restoreBackup(w http.ResponseWriter, r *http.Request) {
-	backup, ok := a.store.GetBackup(r.PathValue("id"))
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
+func (a *App) createAgent(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		DatabaseTarget domain.DatabaseTarget `json:"database_target"`
-		AgentLabels    []string              `json:"agent_labels"`
-		Confirm        bool                  `json:"confirm"`
+		Name       string   `json:"name"`
+		Labels     []string `json:"labels"`
+		MaxRunning int      `json:"max_running"`
+		SSHEnabled bool     `json:"ssh_enabled"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.DatabaseTarget.Environment == "prod" && !req.Confirm {
-		http.Error(w, "production restore requires confirm=true", http.StatusBadRequest)
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
 		return
 	}
-	job := domain.Job{
-		ID:             id("job"),
-		Type:           domain.JobDBRestore,
-		AgentMode:      domain.AgentModeSingle,
-		AgentLabels:    req.AgentLabels,
-		DatabaseTarget: &req.DatabaseTarget,
-		BackupID:       backup.ID,
-		Required:       true,
+	if req.MaxRunning <= 0 {
+		req.MaxRunning = 1
 	}
-	run := domain.Run{ID: id("run"), ProjectID: backup.ProjectID, Status: domain.RunRollbackRunning, Source: "restore", CreatedAt: a.cfg.Now(), UpdatedAt: a.cfg.Now()}
-	a.store.SaveRun(run)
-	go a.runJob(context.Background(), run, job)
-	writeJSON(w, http.StatusAccepted, run)
+	if a.store.AgentNameExists(req.Name) {
+		http.Error(w, "agent name already exists", http.StatusConflict)
+		return
+	}
+	now := a.cfg.Now()
+	settings := a.store.GetSettings()
+	reverseSSHURL := reverseSSHURLFromBase(settings.ServerBaseURL)
+	agent := domain.AgentInfo{
+		ID:            id("agent"),
+		Name:          req.Name,
+		Token:         token(),
+		Labels:        cleanStrings(req.Labels),
+		Status:        domain.AgentOffline,
+		MaxRunning:    req.MaxRunning,
+		SSHEnabled:    req.SSHEnabled,
+		SSHPort:       22,
+		ReverseSSHURL: reverseSSHURL,
+		CreatedAt:     now,
+		LastSeenAt:    now,
+	}
+	a.store.SaveAgent(agent)
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"agent":           agent,
+		"deployScriptURL": a.deployScriptURL(r, agent),
+	})
+}
+
+func (a *App) deleteAgent(w http.ResponseWriter, r *http.Request) {
+	agentID := r.PathValue("id")
+	if _, ok := a.store.GetAgent(agentID); !ok {
+		http.NotFound(w, r)
+		return
+	}
+	a.hub.Delete(agentID)
+	a.store.DeleteAgent(agentID)
+	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+}
+
+func (a *App) getSettings(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, a.store.GetSettings())
+}
+
+func (a *App) updateSettings(w http.ResponseWriter, r *http.Request) {
+	var settings domain.SystemSettings
+	if !decodeJSON(w, r, &settings) {
+		return
+	}
+	if settings.ServerBaseURL == "" && settings.ReverseSSHURL != "" {
+		settings.ServerBaseURL = baseURLFromReverseSSHURL(settings.ReverseSSHURL)
+	}
+	settings.ServerBaseURL = normalizeBaseURL(settings.ServerBaseURL)
+	settings.ReverseSSHURL = reverseSSHURLFromBase(settings.ServerBaseURL)
+	a.store.SaveSettings(settings)
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (a *App) agentDeployScript(w http.ResponseWriter, r *http.Request) {
+	agent, ok := a.store.GetAgent(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"url": a.deployScriptURL(r, agent)})
+}
+
+func (a *App) agentDeployShell(w http.ResponseWriter, r *http.Request) {
+	agent, ok := a.store.GetAgent(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if r.URL.Query().Get("token") != agent.Token {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="haiwo-agent-`+safeFilename(agent.Name)+`.sh"`)
+	_, _ = w.Write([]byte(a.deployScript(r, agent)))
+}
+
+func (a *App) agentSSHCommand(w http.ResponseWriter, r *http.Request) {
+	agent, ok := a.store.GetAgent(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	command := ""
+	if agent.SSHEnabled && agent.SSHHost != "" {
+		user := agent.SSHUser
+		if user == "" {
+			user = "root"
+		}
+		port := agent.SSHPort
+		if port <= 0 {
+			port = 22
+		}
+		command = "ssh -p " + strconv.Itoa(port) + " " + shellQuote(user+"@"+agent.SSHHost)
+	} else if agent.ReverseSSHURL != "" {
+		command = "reverse SSH WebSocket configured at " + agent.ReverseSSHURL
+	}
+	if command == "" {
+		http.Error(w, "ssh is not configured for this agent", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"command": command})
 }
 
 func (a *App) startRun(ctx context.Context, pipelineID, source string, event domain.TriggerEvent) (domain.Run, error) {
@@ -305,6 +392,7 @@ func (a *App) startRun(ctx context.Context, pipelineID, source string, event dom
 		Source:     source,
 		Ref:        event.Ref,
 		Comment:    event.Comment,
+		CommitSHA:  event.CommitSHA,
 		CreatedAt:  a.cfg.Now(),
 		UpdatedAt:  a.cfg.Now(),
 	}
@@ -381,8 +469,6 @@ func (a *App) dispatchTask(ctx context.Context, session *AgentSession, run domai
 		Env:            job.Env,
 		Secrets:        job.Secrets,
 		TimeoutSeconds: job.TimeoutSeconds,
-		DatabaseTarget: job.DatabaseTarget,
-		BackupID:       job.BackupID,
 	}
 	if payload.Repo != nil {
 		payload.Ref = payload.Repo.Ref
@@ -414,16 +500,6 @@ func (a *App) taskProgress(_ context.Context, params json.RawMessage) (any, *jso
 func (a *App) taskComplete(_ context.Context, params json.RawMessage) (any, *jsonrpc.Error) {
 	var msg domain.TaskComplete
 	_ = json.Unmarshal(params, &msg)
-	if msg.BackupID != "" && msg.Artifacts != nil {
-		a.store.SaveBackup(domain.BackupRecord{
-			ID:        msg.BackupID,
-			RunID:     msg.RunID,
-			JobID:     msg.JobID,
-			Path:      msg.Artifacts["path"],
-			Checksum:  msg.Artifacts["checksum"],
-			CreatedAt: a.cfg.Now(),
-		})
-	}
 	return map[string]bool{"ok": true}, nil
 }
 
@@ -431,49 +507,361 @@ func (a *App) artifactUploadComplete(_ context.Context, _ json.RawMessage) (any,
 	return map[string]bool{"ok": true}, nil
 }
 
+func (a *App) deployScript(r *http.Request, agent domain.AgentInfo) string {
+	serverURL := agentRPCURL(a.baseURL(r))
+	labels := strings.Join(agent.Labels, ",")
+	lines := []string{
+		"#!/usr/bin/env sh",
+		"set -eu",
+		"",
+		"# Haiwo agent deployment script.",
+		": ${HAIWO_AGENT_BIN:=./haiwo-agent}",
+		": ${HAIWO_AGENT_BINARY_URL:=https://fileoss.hacksnews.top/haiwo-agent-linux-amd64}",
+		"if [ ! -x \"$HAIWO_AGENT_BIN\" ]; then",
+		"  if command -v curl >/dev/null 2>&1; then",
+		"    curl -fsSL \"$HAIWO_AGENT_BINARY_URL\" -o \"$HAIWO_AGENT_BIN\"",
+		"  elif command -v wget >/dev/null 2>&1; then",
+		"    wget -qO \"$HAIWO_AGENT_BIN\" \"$HAIWO_AGENT_BINARY_URL\"",
+		"  else",
+		"    echo \"curl or wget is required to download haiwo agent\" >&2",
+		"    exit 1",
+		"  fi",
+		"  chmod +x \"$HAIWO_AGENT_BIN\"",
+		"fi",
+		"export HAIWO_SERVER_URL=" + shellQuote(serverURL),
+		"export HAIWO_AGENT_TOKEN=" + shellQuote(agent.Token),
+		"export HAIWO_AGENT_ID=" + shellQuote(agent.ID),
+		"export HAIWO_AGENT_NAME=" + shellQuote(agent.Name),
+		"export HAIWO_AGENT_LABELS=" + shellQuote(labels),
+		"export HAIWO_AGENT_WORKDIR=${HAIWO_AGENT_WORKDIR:-.haiwo-agent}",
+		"export HAIWO_AGENT_MAX_RUNNING=" + shellQuote(strconv.Itoa(max(agent.MaxRunning, 1))),
+	}
+	if agent.ReverseSSHURL != "" {
+		lines = append(lines, "export HAIWO_AGENT_REVERSE_SSH_URL="+shellQuote(agent.ReverseSSHURL))
+	}
+	if agent.SSHEnabled {
+		lines = append(lines, "export HAIWO_AGENT_SSH_ENABLED=true")
+	}
+	lines = append(lines, "", "exec \"$HAIWO_AGENT_BIN\"")
+	return strings.Join(lines, "\n")
+}
+
+func (a *App) deployScriptURL(r *http.Request, agent domain.AgentInfo) string {
+	return a.baseURL(r) + "/api/agents/" + agent.ID + "/deploy.sh?token=" + agent.Token
+}
+
+func (a *App) baseURL(r *http.Request) string {
+	if baseURL := normalizeBaseURL(a.store.GetSettings().ServerBaseURL); baseURL != "" {
+		return baseURL
+	}
+	scheme := "http"
+	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		scheme = "https"
+	}
+	host := r.Host
+	if forwardedHost := r.Header.Get("X-Forwarded-Host"); forwardedHost != "" {
+		host = forwardedHost
+	}
+	return scheme + "://" + host
+}
+
+func websocketURL(r *http.Request) string {
+	scheme := "ws"
+	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		scheme = "wss"
+	}
+	host := r.Host
+	if forwardedHost := r.Header.Get("X-Forwarded-Host"); forwardedHost != "" {
+		host = forwardedHost
+	}
+	return scheme + "://" + host + "/rpc/agent/ws"
+}
+
+func agentRPCURL(baseURL string) string {
+	baseURL = normalizeBaseURL(baseURL)
+	if strings.HasPrefix(baseURL, "https://") {
+		return "wss://" + strings.TrimPrefix(baseURL, "https://") + "/rpc/agent/ws"
+	}
+	return "ws://" + strings.TrimPrefix(baseURL, "http://") + "/rpc/agent/ws"
+}
+
+func safeFilename(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "agent"
+	}
+	var b strings.Builder
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return "agent"
+	}
+	return b.String()
+}
+
+func normalizeBaseURL(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = strings.TrimRight(value, "/")
+	if strings.HasPrefix(value, "ws://") {
+		value = "http://" + strings.TrimPrefix(value, "ws://")
+	}
+	if strings.HasPrefix(value, "wss://") {
+		value = "https://" + strings.TrimPrefix(value, "wss://")
+	}
+	if !strings.HasPrefix(value, "http://") && !strings.HasPrefix(value, "https://") {
+		value = "https://" + value
+	}
+	for _, suffix := range []string{"/ssh/agent", "/rpc/agent/ws"} {
+		if strings.HasSuffix(value, suffix) {
+			value = strings.TrimSuffix(value, suffix)
+		}
+	}
+	return strings.TrimRight(value, "/")
+}
+
+func reverseSSHURLFromBase(baseURL string) string {
+	baseURL = normalizeBaseURL(baseURL)
+	if baseURL == "" {
+		return ""
+	}
+	if strings.HasPrefix(baseURL, "https://") {
+		return "wss://" + strings.TrimPrefix(baseURL, "https://") + "/ssh/agent"
+	}
+	return "ws://" + strings.TrimPrefix(baseURL, "http://") + "/ssh/agent"
+}
+
+func baseURLFromReverseSSHURL(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(value, "wss://") {
+		value = "https://" + strings.TrimPrefix(value, "wss://")
+	}
+	if strings.HasPrefix(value, "ws://") {
+		value = "http://" + strings.TrimPrefix(value, "ws://")
+	}
+	return normalizeBaseURL(value)
+}
+
 type Store struct {
 	mu        sync.RWMutex
 	now       func() time.Time
+	db        *gorm.DB
 	projects  map[string]domain.Project
 	pipelines map[string]domain.Pipeline
 	triggers  map[string]domain.Trigger
-	databases map[string][]domain.DatabaseTarget
 	agents    map[string]domain.AgentInfo
 	runs      map[string]domain.Run
-	backups   map[string]domain.BackupRecord
+	settings  domain.SystemSettings
 }
 
-func NewStore(now func() time.Time) *Store {
-	return &Store{
+func NewStore(now func() time.Time, db *gorm.DB) *Store {
+	s := &Store{
 		now:       now,
+		db:        db,
 		projects:  map[string]domain.Project{},
 		pipelines: map[string]domain.Pipeline{},
 		triggers:  map[string]domain.Trigger{},
-		databases: map[string][]domain.DatabaseTarget{},
 		agents:    map[string]domain.AgentInfo{},
 		runs:      map[string]domain.Run{},
-		backups:   map[string]domain.BackupRecord{},
+		settings:  domain.SystemSettings{},
+	}
+	s.loadFromDB()
+	return s
+}
+
+func (s *Store) SaveProject(v domain.Project) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.projects[v.ID] = v
+	if s.db != nil {
+		if err := s.db.Save(&dbmodel.Project{
+			ID:            v.ID,
+			Name:          v.Name,
+			Provider:      v.Provider,
+			RepoURL:       v.RepoURL,
+			DefaultBranch: v.DefaultBranch,
+			CreatedAt:     v.CreatedAt,
+		}).Error; err != nil {
+			log.Printf("save project failed: %v", err)
+		}
 	}
 }
 
-func (s *Store) SaveProject(v domain.Project) { s.mu.Lock(); defer s.mu.Unlock(); s.projects[v.ID] = v }
 func (s *Store) SavePipeline(v domain.Pipeline) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pipelines[v.ID] = v
+	if s.db != nil {
+		definition, err := json.Marshal(v.Stages)
+		if err != nil {
+			log.Printf("marshal pipeline failed: %v", err)
+			return
+		}
+		if err := s.db.Save(&dbmodel.Pipeline{
+			ID:         v.ID,
+			ProjectID:  v.ProjectID,
+			Name:       v.Name,
+			Definition: definition,
+			CreatedAt:  v.CreatedAt,
+		}).Error; err != nil {
+			log.Printf("save pipeline failed: %v", err)
+		}
+	}
 }
-func (s *Store) SaveTrigger(v domain.Trigger) { s.mu.Lock(); defer s.mu.Unlock(); s.triggers[v.ID] = v }
-func (s *Store) SaveDatabase(projectID string, v domain.DatabaseTarget) {
+
+func (s *Store) SaveTrigger(v domain.Trigger) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.databases[projectID] = append(s.databases[projectID], v)
+	s.triggers[v.ID] = v
+	if s.db != nil {
+		if err := s.db.Save(&dbmodel.Trigger{
+			ID:             v.ID,
+			ProjectID:      v.ProjectID,
+			PipelineID:     v.PipelineID,
+			Type:           v.Type,
+			BranchPattern:  v.BranchPattern,
+			CommitPattern:  v.CommitPattern,
+			TagPattern:     v.TagPattern,
+			CommentPattern: v.CommentPattern,
+			Cron:           v.Cron,
+			CreatedAt:      v.CreatedAt,
+		}).Error; err != nil {
+			log.Printf("save trigger failed: %v", err)
+		}
+	}
 }
-func (s *Store) SaveAgent(v domain.AgentInfo) { s.mu.Lock(); defer s.mu.Unlock(); s.agents[v.ID] = v }
-func (s *Store) SaveRun(v domain.Run)         { s.mu.Lock(); defer s.mu.Unlock(); s.runs[v.ID] = v }
-func (s *Store) SaveBackup(v domain.BackupRecord) {
+
+func (s *Store) SaveAgent(v domain.AgentInfo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.backups[v.ID] = v
+	s.agents[v.ID] = v
+	if s.db != nil {
+		labels, err := json.Marshal(v.Labels)
+		if err != nil {
+			log.Printf("marshal agent labels failed: %v", err)
+			return
+		}
+		if err := s.db.Save(&dbmodel.Agent{
+			ID:            v.ID,
+			Name:          v.Name,
+			Token:         v.Token,
+			Version:       v.Version,
+			Labels:        labels,
+			Status:        string(v.Status),
+			CurrentRun:    v.CurrentRun,
+			MaxRunning:    v.MaxRunning,
+			SSHEnabled:    v.SSHEnabled,
+			SSHHost:       v.SSHHost,
+			SSHPort:       v.SSHPort,
+			SSHUser:       v.SSHUser,
+			ReverseSSHURL: v.ReverseSSHURL,
+			CreatedAt:     v.CreatedAt,
+			LastSeenAt:    v.LastSeenAt,
+		}).Error; err != nil {
+			log.Printf("save agent failed: %v", err)
+		}
+	}
+}
+
+func (s *Store) DeleteAgent(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.agents, id)
+	if s.db != nil {
+		if err := s.db.Delete(&dbmodel.Agent{ID: id}).Error; err != nil {
+			log.Printf("delete agent failed: %v", err)
+		}
+	}
+}
+
+func (s *Store) AgentNameExists(name string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, agent := range s.agents {
+		if strings.EqualFold(agent.Name, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) SaveRun(v domain.Run) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.runs[v.ID] = v
+	if s.db != nil {
+		metadata, err := json.Marshal(v.Metadata)
+		if err != nil {
+			log.Printf("marshal run metadata failed: %v", err)
+			return
+		}
+		if err := s.db.Save(&dbmodel.Run{
+			ID:         v.ID,
+			ProjectID:  v.ProjectID,
+			PipelineID: v.PipelineID,
+			Status:     string(v.Status),
+			Source:     v.Source,
+			Ref:        v.Ref,
+			Comment:    v.Comment,
+			CommitSHA:  v.CommitSHA,
+			Metadata:   metadata,
+			CreatedAt:  v.CreatedAt,
+			UpdatedAt:  v.UpdatedAt,
+		}).Error; err != nil {
+			log.Printf("save run failed: %v", err)
+		}
+	}
+}
+
+func (s *Store) GetAgent(id string) (domain.AgentInfo, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	v, ok := s.agents[id]
+	return v, ok
+}
+
+func (s *Store) GetAgentByToken(token string) (domain.AgentInfo, bool) {
+	if token == "" {
+		return domain.AgentInfo{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, v := range s.agents {
+		if v.Token != "" && v.Token == token {
+			return v, true
+		}
+	}
+	return domain.AgentInfo{}, false
+}
+
+func (s *Store) GetSettings() domain.SystemSettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.settings
+}
+
+func (s *Store) SaveSettings(v domain.SystemSettings) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.settings = v
+	if s.db != nil {
+		value, err := json.Marshal(v)
+		if err != nil {
+			log.Printf("marshal settings failed: %v", err)
+			return
+		}
+		if err := s.db.Save(&dbmodel.SystemSetting{Key: "system", Value: value, UpdatedAt: s.now()}).Error; err != nil {
+			log.Printf("save settings failed: %v", err)
+		}
+	}
 }
 
 func (s *Store) ListProjects() []domain.Project {
@@ -520,12 +908,6 @@ func (s *Store) ListRuns(projectID string) []domain.Run {
 	}
 	return out
 }
-func (s *Store) GetBackup(id string) (domain.BackupRecord, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	v, ok := s.backups[id]
-	return v, ok
-}
 func (s *Store) ListTriggers(projectID string) []domain.Trigger {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -546,19 +928,128 @@ func (s *Store) ListAgents() []domain.AgentInfo {
 	}
 	return out
 }
-func (s *Store) ListBackups() []domain.BackupRecord {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]domain.BackupRecord, 0, len(s.backups))
-	for _, v := range s.backups {
-		out = append(out, v)
+
+func (s *Store) loadFromDB() {
+	if s.db == nil {
+		return
 	}
-	return out
+	var projects []dbmodel.Project
+	if err := s.db.Find(&projects).Error; err != nil {
+		log.Printf("load projects failed: %v", err)
+	} else {
+		for _, v := range projects {
+			s.projects[v.ID] = domain.Project{
+				ID:            v.ID,
+				Name:          v.Name,
+				Provider:      v.Provider,
+				RepoURL:       v.RepoURL,
+				DefaultBranch: v.DefaultBranch,
+				CreatedAt:     v.CreatedAt,
+			}
+		}
+	}
+	var pipelines []dbmodel.Pipeline
+	if err := s.db.Find(&pipelines).Error; err != nil {
+		log.Printf("load pipelines failed: %v", err)
+	} else {
+		for _, v := range pipelines {
+			var stages []domain.Stage
+			if len(v.Definition) > 0 {
+				_ = json.Unmarshal(v.Definition, &stages)
+			}
+			s.pipelines[v.ID] = domain.Pipeline{
+				ID:        v.ID,
+				ProjectID: v.ProjectID,
+				Name:      v.Name,
+				Stages:    stages,
+				CreatedAt: v.CreatedAt,
+			}
+		}
+	}
+	var triggers []dbmodel.Trigger
+	if err := s.db.Find(&triggers).Error; err != nil {
+		log.Printf("load triggers failed: %v", err)
+	} else {
+		for _, v := range triggers {
+			s.triggers[v.ID] = domain.Trigger{
+				ID:             v.ID,
+				ProjectID:      v.ProjectID,
+				PipelineID:     v.PipelineID,
+				Type:           v.Type,
+				BranchPattern:  v.BranchPattern,
+				CommitPattern:  v.CommitPattern,
+				TagPattern:     v.TagPattern,
+				CommentPattern: v.CommentPattern,
+				Cron:           v.Cron,
+				CreatedAt:      v.CreatedAt,
+			}
+		}
+	}
+	var agents []dbmodel.Agent
+	if err := s.db.Find(&agents).Error; err != nil {
+		log.Printf("load agents failed: %v", err)
+	} else {
+		for _, v := range agents {
+			var labels []string
+			if len(v.Labels) > 0 {
+				_ = json.Unmarshal(v.Labels, &labels)
+			}
+			s.agents[v.ID] = domain.AgentInfo{
+				ID:            v.ID,
+				Name:          v.Name,
+				Token:         v.Token,
+				Version:       v.Version,
+				Labels:        labels,
+				Status:        domain.AgentOffline,
+				CurrentRun:    0,
+				MaxRunning:    v.MaxRunning,
+				SSHEnabled:    v.SSHEnabled,
+				SSHHost:       v.SSHHost,
+				SSHPort:       v.SSHPort,
+				SSHUser:       v.SSHUser,
+				ReverseSSHURL: v.ReverseSSHURL,
+				CreatedAt:     v.CreatedAt,
+				LastSeenAt:    v.LastSeenAt,
+			}
+		}
+	}
+	var runs []dbmodel.Run
+	if err := s.db.Find(&runs).Error; err != nil {
+		log.Printf("load runs failed: %v", err)
+	} else {
+		for _, v := range runs {
+			var metadata map[string]string
+			if len(v.Metadata) > 0 {
+				_ = json.Unmarshal(v.Metadata, &metadata)
+			}
+			s.runs[v.ID] = domain.Run{
+				ID:         v.ID,
+				ProjectID:  v.ProjectID,
+				PipelineID: v.PipelineID,
+				Status:     domain.RunStatus(v.Status),
+				Source:     v.Source,
+				Ref:        v.Ref,
+				Comment:    v.Comment,
+				CommitSHA:  v.CommitSHA,
+				Metadata:   metadata,
+				CreatedAt:  v.CreatedAt,
+				UpdatedAt:  v.UpdatedAt,
+			}
+		}
+	}
+	var setting dbmodel.SystemSetting
+	if err := s.db.First(&setting, "key = ?", "system").Error; err == nil && len(setting.Value) > 0 {
+		_ = json.Unmarshal(setting.Value, &s.settings)
+	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		log.Printf("load settings failed: %v", err)
+	}
 }
 
 type AgentSession struct {
-	id   string
-	peer *jsonrpc.Peer
+	id          string
+	authAgentID string
+	token       string
+	peer        *jsonrpc.Peer
 }
 
 type AgentHub struct {
@@ -576,6 +1067,29 @@ func (h *AgentHub) RegisterHandler(session *AgentSession) jsonrpc.Handler {
 		var info domain.AgentInfo
 		if err := json.Unmarshal(params, &info); err != nil {
 			return nil, &jsonrpc.Error{Code: -32602, Message: err.Error()}
+		}
+		if session.authAgentID != "" && info.ID != session.authAgentID {
+			return nil, &jsonrpc.Error{Code: -32001, Message: "agent token does not match agent id"}
+		}
+		if existing, ok := h.store.GetAgent(info.ID); ok {
+			info.Token = existing.Token
+			info.SSHEnabled = existing.SSHEnabled
+			info.SSHHost = existing.SSHHost
+			info.SSHPort = existing.SSHPort
+			info.SSHUser = existing.SSHUser
+			info.ReverseSSHURL = existing.ReverseSSHURL
+			info.CreatedAt = existing.CreatedAt
+			if len(info.Labels) == 0 {
+				info.Labels = existing.Labels
+			}
+			if info.MaxRunning <= 0 {
+				info.MaxRunning = existing.MaxRunning
+			}
+		} else if session.token != "" {
+			info.Token = session.token
+		}
+		if info.CreatedAt.IsZero() {
+			info.CreatedAt = time.Now()
 		}
 		info.Status = domain.AgentOnline
 		info.LastSeenAt = time.Now()
@@ -597,6 +1111,27 @@ func (h *AgentHub) HeartbeatHandler(session *AgentSession) jsonrpc.Handler {
 		if info.ID == "" {
 			info.ID = session.id
 		}
+		if session.authAgentID != "" && info.ID != session.authAgentID {
+			return nil, &jsonrpc.Error{Code: -32001, Message: "agent token does not match agent id"}
+		}
+		if existing, ok := h.store.GetAgent(info.ID); ok {
+			info.Token = existing.Token
+			info.SSHEnabled = existing.SSHEnabled
+			info.SSHHost = existing.SSHHost
+			info.SSHPort = existing.SSHPort
+			info.SSHUser = existing.SSHUser
+			info.ReverseSSHURL = existing.ReverseSSHURL
+			info.CreatedAt = existing.CreatedAt
+			if len(info.Labels) == 0 {
+				info.Labels = existing.Labels
+			}
+			if info.MaxRunning <= 0 {
+				info.MaxRunning = existing.MaxRunning
+			}
+		}
+		if info.CreatedAt.IsZero() {
+			info.CreatedAt = time.Now()
+		}
 		info.Status = domain.AgentOnline
 		info.LastSeenAt = time.Now()
 		h.store.SaveAgent(info)
@@ -611,6 +1146,16 @@ func (h *AgentHub) Disconnect(session *AgentSession) {
 	h.mu.Lock()
 	delete(h.sessions, session.id)
 	h.mu.Unlock()
+}
+
+func (h *AgentHub) Delete(agentID string) {
+	h.mu.Lock()
+	session := h.sessions[agentID]
+	delete(h.sessions, agentID)
+	h.mu.Unlock()
+	if session != nil && session.peer != nil {
+		_ = session.peer.Close()
+	}
 }
 
 func (h *AgentHub) Match(ids, labels []string) []*AgentSession {
@@ -657,6 +1202,31 @@ func id(prefix string) string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
 	return prefix + "_" + hex.EncodeToString(b[:])
+}
+
+func token() string {
+	var b [24]byte
+	_, _ = rand.Read(b[:])
+	return "hwagt_" + hex.EncodeToString(b[:])
+}
+
+func cleanStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			part = strings.TrimSpace(part)
+			if part != "" && !seen[part] {
+				out = append(out, part)
+				seen[part] = true
+			}
+		}
+	}
+	return out
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 func contains(values []string, want string) bool {
