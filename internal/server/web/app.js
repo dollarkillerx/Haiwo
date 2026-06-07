@@ -4,6 +4,8 @@ const state = {
   runs: [],
   agents: [],
   settings: {},
+  selectedRunId: "",
+  selectedRunPipelineId: "",
 };
 
 const translations = {
@@ -50,7 +52,10 @@ const translations = {
     "pipeline.listHint": "Reusable workflows for push, tag, manual runs, and ordered Agent commands.",
     "run.start": "Start Run",
     "run.startHint": "Launch a pipeline with a ref or comment command.",
-    "run.listHint": "Execution records are polled every five seconds.",
+    "run.historyFilter": "Run History",
+    "run.historyFilterHint": "Select a pipeline to inspect previous executions.",
+    "run.allPipelines": "All pipelines",
+    "run.listHint": "Execution records are polled every five seconds. Click Details to inspect logs.",
     "agent.listHint": "Workers connected through JSON-RPC over WebSocket.",
     "agent.create": "Add Agent",
     "agent.createHint": "Create an agent identity and deployment script.",
@@ -159,6 +164,7 @@ const translations = {
     "action.script": "Script",
     "action.ssh": "SSH",
     "action.run": "Run",
+    "action.details": "Details",
     "action.copy": "Copy",
     "action.add": "Add",
     "action.addStep": "Add step",
@@ -175,6 +181,10 @@ const translations = {
     "settings.current": "Current Settings",
     "settings.currentHint": "Agents created after saving will inherit the generated reverse SSH endpoint.",
     "settings.reverseSSHEmpty": "Server URL is not configured.",
+    "run.details": "Run Details",
+    "run.error": "Error",
+    "run.logs": "Logs",
+    "run.noLogs": "No logs recorded yet.",
   },
   zh: {
     "brand.subtitle": "交付控制平面",
@@ -219,7 +229,10 @@ const translations = {
     "pipeline.listHint": "用于 push、tag、手动运行和顺序 Agent 命令的可复用工作流。",
     "run.start": "启动运行",
     "run.startHint": "使用 ref 或评论命令启动流水线。",
-    "run.listHint": "执行记录每五秒自动刷新。",
+    "run.historyFilter": "运行历史",
+    "run.historyFilterHint": "选择流水线查看历史执行情况。",
+    "run.allPipelines": "全部流水线",
+    "run.listHint": "执行记录每五秒自动刷新。点击详情查看日志。",
     "agent.listHint": "通过 WebSocket JSON-RPC 连接的工作节点。",
     "agent.create": "添加 Agent",
     "agent.createHint": "创建 Agent 身份并生成部署脚本。",
@@ -328,6 +341,7 @@ const translations = {
     "action.script": "脚本",
     "action.ssh": "SSH",
     "action.run": "运行",
+    "action.details": "详情",
     "action.copy": "复制",
     "action.add": "添加",
     "action.addStep": "添加步骤",
@@ -344,6 +358,10 @@ const translations = {
     "settings.current": "当前设置",
     "settings.currentHint": "保存后新创建的 Agent 会继承自动生成的反向 SSH 地址。",
     "settings.reverseSSHEmpty": "尚未配置 Server 域名。",
+    "run.details": "运行详情",
+    "run.error": "错误",
+    "run.logs": "日志",
+    "run.noLogs": "暂无日志记录。",
   },
   ja: {
     "brand.subtitle": "デリバリー制御プレーン",
@@ -388,7 +406,10 @@ const translations = {
     "pipeline.listHint": "push、tag、手動実行、順序付き Agent コマンド用の再利用可能なワークフロー。",
     "run.start": "実行開始",
     "run.startHint": "ref またはコメントコマンドでパイプラインを起動します。",
-    "run.listHint": "実行履歴は 5 秒ごとに更新されます。",
+    "run.historyFilter": "実行履歴",
+    "run.historyFilterHint": "パイプラインを選択して過去の実行を確認します。",
+    "run.allPipelines": "すべてのパイプライン",
+    "run.listHint": "実行履歴は 5 秒ごとに更新されます。詳細でログを確認できます。",
     "agent.listHint": "WebSocket JSON-RPC で接続された実行ノード。",
     "agent.create": "Agent 追加",
     "agent.createHint": "Agent ID とデプロイスクリプトを作成します。",
@@ -497,6 +518,7 @@ const translations = {
     "action.script": "スクリプト",
     "action.ssh": "SSH",
     "action.run": "実行",
+    "action.details": "詳細",
     "action.copy": "コピー",
     "action.add": "追加",
     "action.addStep": "ステップ追加",
@@ -513,6 +535,10 @@ const translations = {
     "settings.current": "現在の設定",
     "settings.currentHint": "保存後に作成される Agent は生成されたリバース SSH エンドポイントを継承します。",
     "settings.reverseSSHEmpty": "Server URL は未設定です。",
+    "run.details": "実行詳細",
+    "run.error": "エラー",
+    "run.logs": "ログ",
+    "run.noLogs": "ログはまだ記録されていません。",
   },
 };
 
@@ -547,11 +573,17 @@ document.getElementById("add-pipeline-step").addEventListener("click", addPipeli
 document.getElementById("pipeline-steps").addEventListener("click", pipelineStepAction);
 document.getElementById("pipeline-steps").addEventListener("input", updatePipelineStepsFromDOM);
 document.getElementById("pipeline-steps").addEventListener("change", updatePipelineStepsFromDOM);
-document.getElementById("run-form").addEventListener("submit", startRun);
+document.getElementById("run-pipeline-filter").addEventListener("change", (event) => {
+  state.selectedRunPipelineId = event.currentTarget.value;
+  state.selectedRunId = "";
+  renderRuns();
+});
 document.getElementById("agent-form").addEventListener("submit", createAgent);
 document.getElementById("settings-form").addEventListener("submit", saveSettings);
 document.getElementById("agents-table").addEventListener("click", agentTableAction);
 document.getElementById("pipelines-table").addEventListener("click", pipelineTableAction);
+document.getElementById("runs-table").addEventListener("click", runTableAction);
+document.getElementById("recent-runs").addEventListener("click", runTableAction);
 document.querySelectorAll("[data-create-target]").forEach((button) => {
   button.addEventListener("click", () => showCreatePanel(button.dataset.createTarget));
 });
@@ -699,20 +731,6 @@ function updatePipelineStepsFromDOM() {
   }));
 }
 
-async function startRun(event) {
-  event.preventDefault();
-  const form = new FormData(event.currentTarget);
-  const pipelineID = form.get("pipeline_id");
-  if (!pipelineID) {
-    notify(t("notice.pipelineRequired"), true);
-    return;
-  }
-  const payload = { type: "manual", ref: form.get("ref"), comment: form.get("comment") };
-  const run = await api(`/api/pipelines/${pipelineID}/runs`, { method: "POST", body: payload });
-  notify(t("notice.runStarted", { id: run.id }));
-  await refresh();
-}
-
 async function createAgent(event) {
   event.preventDefault();
   const formElement = event.currentTarget;
@@ -780,6 +798,15 @@ async function pipelineTableAction(event) {
   await refresh();
 }
 
+function runTableAction(event) {
+  const button = event.target.closest("[data-run-action]");
+  if (!button) return;
+  if (button.dataset.runAction === "details") {
+    state.selectedRunId = state.selectedRunId === button.dataset.runId ? "" : button.dataset.runId;
+    renderRuns();
+  }
+}
+
 function toggleHelp(event) {
   const button = event.target.closest("[data-help]");
   if (!button) return;
@@ -841,7 +868,7 @@ function render() {
 
   renderHero(onlineAgents.length, runningRuns, failedRuns);
   renderSelect("pipeline-project", state.projects, "id", (project) => `${project.name} (${project.provider})`);
-  renderSelect("run-pipeline", state.pipelines, "id", (pipeline) => `${pipeline.name} (${pipeline.id})`);
+  renderRunPipelineFilter();
   syncPipelineRef(false);
   updatePipelineStepsFromDOM();
   renderTriggerFields();
@@ -902,7 +929,24 @@ function renderPipelines() {
 }
 
 function renderRuns() {
-  document.getElementById("runs-table").innerHTML = runTable([...state.runs].reverse());
+  const runs = state.runs
+    .filter((run) => !state.selectedRunPipelineId || run.pipeline_id === state.selectedRunPipelineId)
+    .reverse();
+  if (state.selectedRunId && !runs.some((run) => run.id === state.selectedRunId)) {
+    state.selectedRunId = "";
+  }
+  document.getElementById("runs-table").innerHTML = runTable(runs) + runDetails();
+}
+
+function renderRunPipelineFilter() {
+  const select = document.getElementById("run-pipeline-filter");
+  const selected = state.pipelines.some((pipeline) => pipeline.id === state.selectedRunPipelineId) ? state.selectedRunPipelineId : "";
+  state.selectedRunPipelineId = selected;
+  select.innerHTML = [
+    `<option value="">${escapeHTML(t("run.allPipelines"))}</option>`,
+    ...state.pipelines.map((pipeline) => `<option value="${escapeHTML(pipeline.id)}">${escapeHTML(`${pipeline.name} (${pipeline.id})`)}</option>`),
+  ].join("");
+  select.value = selected;
 }
 
 function renderAgents() {
@@ -1041,7 +1085,7 @@ function renderCapacity() {
 
 function runTable(runs) {
   return table(
-    [t("th.run"), t("th.project"), t("th.pipeline"), t("th.status"), t("th.source"), t("th.ref"), t("th.updated")],
+    [t("th.run"), t("th.project"), t("th.pipeline"), t("th.status"), t("th.source"), t("th.ref"), t("th.updated"), t("th.actions")],
     runs.map((r) => [
       code(r.id),
       shortName(state.projects.find((p) => p.id === r.project_id)),
@@ -1050,9 +1094,34 @@ function runTable(runs) {
       escapeHTML(r.source),
       code(r.ref || "-"),
       date(r.updated_at),
+      runActions(r),
     ]),
     t("empty.runs")
   );
+}
+
+function runActions(run) {
+  return `<button class="table-action" type="button" data-run-action="details" data-run-id="${escapeHTML(run.id)}">${escapeHTML(t("action.details"))}</button>`;
+}
+
+function runDetails() {
+  if (!state.selectedRunId) return "";
+  const run = state.runs.find((item) => item.id === state.selectedRunId);
+  if (!run) return "";
+  const metadata = run.metadata || {};
+  const logs = metadata.logs || "";
+  const error = metadata.error || "";
+  return `<div class="run-details">
+    <div class="panel-header">
+      <div>
+        <h3>${escapeHTML(t("run.details"))}</h3>
+        <p>${escapeHTML(run.id)}</p>
+      </div>
+    </div>
+    ${error ? `<div class="run-error"><strong>${escapeHTML(t("run.error"))}</strong><span>${escapeHTML(error)}</span></div>` : ""}
+    <div class="run-log-title">${escapeHTML(t("run.logs"))}</div>
+    <pre class="run-log">${escapeHTML(logs || t("run.noLogs"))}</pre>
+  </div>`;
 }
 
 function table(headers, rows, emptyText) {

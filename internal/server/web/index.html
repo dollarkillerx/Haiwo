@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Haiwo CI/CD</title>
-    <link rel="stylesheet" href="/styles.css?v=202606071620" />
+    <link rel="stylesheet" href="/styles.css?v=202606071730" />
   </head>
   <body>
     <aside class="sidebar">
@@ -198,18 +198,15 @@
 
       <section class="view hidden" id="runs-view">
         <div class="grid two">
-          <form id="run-form" class="panel form">
+          <div id="run-filter" class="panel form">
             <div class="panel-header">
               <div>
-                <h3 data-i18n="run.start">Start Run</h3>
-                <p data-i18n="run.startHint">Launch a pipeline with a ref or comment command.</p>
+                <h3 data-i18n="run.historyFilter">Run History</h3>
+                <p data-i18n="run.historyFilterHint">Select a pipeline to inspect previous executions.</p>
               </div>
             </div>
-            <label><span data-i18n="field.pipeline">Pipeline</span><select id="run-pipeline" name="pipeline_id" required></select></label>
-            <label><span data-i18n="field.ref">Ref</span><input name="ref" value="main" /></label>
-            <label><span data-i18n="field.comment">Comment</span><input name="comment" placeholder="/deploy staging" /></label>
-            <button class="button primary" type="submit" data-i18n="run.start">Start Run</button>
-          </form>
+            <label><span data-i18n="field.pipeline">Pipeline</span><select id="run-pipeline-filter"></select></label>
+          </div>
           <div class="panel">
             <div class="panel-header">
               <div>
@@ -283,6 +280,6 @@
       </section>
     </main>
 
-    <script src="/app.js?v=202606071620"></script>
+    <script src="/app.js?v=202606071730"></script>
   </body>
 </html>

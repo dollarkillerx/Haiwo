@@ -799,6 +799,48 @@ tbody tr:hover {
   line-height: 1.55;
 }
 
+.run-details {
+  margin-top: 16px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+
+.run-error {
+  display: grid;
+  gap: 6px;
+  margin: 16px;
+  padding: 12px;
+  border-left: 3px solid var(--red);
+  background: #fde7e9;
+  color: var(--text);
+}
+
+.run-error strong,
+.run-log-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.run-log-title {
+  margin: 0 16px 8px;
+}
+
+.run-log {
+  min-height: 220px;
+  max-height: 520px;
+  margin: 0 16px 16px;
+  padding: 14px;
+  overflow: auto;
+  background: #1e1e1e;
+  color: #f3f2f1;
+  font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
 .settings-summary {
   display: grid;
 }

@@ -40,6 +40,8 @@ type App struct {
 	termMu    sync.Mutex
 	terminals map[string]*terminalBridge
 	tickets   map[string]terminalTicket
+	taskMu    sync.Mutex
+	tasks     map[string]taskRef
 }
 
 type terminalBridge struct {
@@ -52,6 +54,11 @@ type terminalTicket struct {
 	ExpiresAt time.Time
 }
 
+type taskRef struct {
+	RunID string
+	JobID string
+}
+
 func New(cfg Config) *App {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -62,6 +69,7 @@ func New(cfg Config) *App {
 		cron:      cron.New(),
 		terminals: map[string]*terminalBridge{},
 		tickets:   map[string]terminalTicket{},
+		tasks:     map[string]taskRef{},
 		upgrader: websocket.Upgrader{
 			CheckOrigin: checkWebSocketOrigin,
 		},
@@ -519,6 +527,7 @@ func (a *App) runPipeline(ctx context.Context, run domain.Run, pipeline domain.P
 		}
 		for range stage.Jobs {
 			if err := <-errCh; err != nil {
+				a.store.AppendRunLog(run.ID, "error", err.Error(), a.cfg.Now())
 				run.Status = domain.RunFailed
 				run.UpdatedAt = a.cfg.Now()
 				a.store.SaveRun(run)
@@ -579,12 +588,19 @@ func (a *App) dispatchTask(ctx context.Context, session *AgentSession, run domai
 	if payload.Repo != nil {
 		payload.Ref = payload.Repo.Ref
 	}
+	a.registerTask(payload.TaskID, run.ID, job.ID)
 	var result domain.TaskComplete
 	if err := session.peer.Call(ctx, "task.run", payload, &result); err != nil {
+		a.store.AppendRunLog(run.ID, "error", "dispatch "+payload.TaskID+": "+err.Error(), a.cfg.Now())
 		return err
 	}
 	if result.Status != domain.JobSuccess {
-		return errors.New(result.Error)
+		message := result.Error
+		if message == "" {
+			message = "task failed"
+		}
+		a.store.AppendRunLog(run.ID, "error", "task "+payload.TaskID+": "+message, a.cfg.Now())
+		return errors.New(message)
 	}
 	return nil
 }
@@ -593,6 +609,9 @@ func (a *App) taskLog(_ context.Context, params json.RawMessage) (any, *jsonrpc.
 	var msg domain.TaskLog
 	_ = json.Unmarshal(params, &msg)
 	log.Printf("[%s][%s] %s", msg.TaskID, msg.Stream, msg.Line)
+	if ref, ok := a.taskRef(msg.TaskID); ok {
+		a.store.AppendRunLog(ref.RunID, msg.Stream, msg.Line, msg.Time)
+	}
 	return map[string]bool{"ok": true}, nil
 }
 
@@ -606,6 +625,13 @@ func (a *App) taskProgress(_ context.Context, params json.RawMessage) (any, *jso
 func (a *App) taskComplete(_ context.Context, params json.RawMessage) (any, *jsonrpc.Error) {
 	var msg domain.TaskComplete
 	_ = json.Unmarshal(params, &msg)
+	if msg.RunID != "" {
+		line := "task " + msg.TaskID + " completed: " + string(msg.Status)
+		if msg.Error != "" {
+			line += " error=" + msg.Error
+		}
+		a.store.AppendRunLog(msg.RunID, "complete", line, a.cfg.Now())
+	}
 	return map[string]bool{"ok": true}, nil
 }
 
@@ -647,6 +673,19 @@ func (a *App) terminal(sessionID string) *terminalBridge {
 	a.termMu.Lock()
 	defer a.termMu.Unlock()
 	return a.terminals[sessionID]
+}
+
+func (a *App) registerTask(taskID, runID, jobID string) {
+	a.taskMu.Lock()
+	defer a.taskMu.Unlock()
+	a.tasks[taskID] = taskRef{RunID: runID, JobID: jobID}
+}
+
+func (a *App) taskRef(taskID string) (taskRef, bool) {
+	a.taskMu.Lock()
+	defer a.taskMu.Unlock()
+	ref, ok := a.tasks[taskID]
+	return ref, ok
 }
 
 func (a *App) issueTerminalTicket(agentID string) string {
@@ -1095,6 +1134,41 @@ func (s *Store) SaveRun(v domain.Run) {
 			log.Printf("save run failed: %v", err)
 		}
 	}
+}
+
+func (s *Store) AppendRunLog(runID, stream, line string, at time.Time) {
+	s.mu.Lock()
+	run, ok := s.runs[runID]
+	if !ok {
+		s.mu.Unlock()
+		return
+	}
+	if run.Metadata == nil {
+		run.Metadata = map[string]string{}
+	}
+	if at.IsZero() {
+		at = s.now()
+	}
+	entry := at.Format("2006-01-02 15:04:05") + " [" + stream + "] " + line
+	logs := strings.TrimSpace(run.Metadata["logs"])
+	if logs != "" {
+		logs += "\n"
+	}
+	logs += entry
+	const maxRunLogBytes = 24000
+	if len(logs) > maxRunLogBytes {
+		logs = logs[len(logs)-maxRunLogBytes:]
+		if i := strings.IndexByte(logs, '\n'); i >= 0 {
+			logs = logs[i+1:]
+		}
+	}
+	run.Metadata["logs"] = logs
+	if stream == "error" {
+		run.Metadata["error"] = line
+	}
+	s.runs[runID] = run
+	s.mu.Unlock()
+	s.SaveRun(run)
 }
 
 func (s *Store) GetAgent(id string) (domain.AgentInfo, bool) {
