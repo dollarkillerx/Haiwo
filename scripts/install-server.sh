@@ -22,6 +22,16 @@ DATA_DIR="${HAIWO_SERVER_HOME}/data"
 
 LANG_SEL="en"
 
+# 通过 `curl ... | bash` 运行时 stdin 是管道（脚本内容），read 会立刻读到 EOF。
+# 交互输入统一走 /dev/tty，保证管道安装也能正常交互。
+read_tty() {
+  if [ -r /dev/tty ]; then
+    read "$@" </dev/tty
+  else
+    read "$@"
+  fi
+}
+
 # ——— 国际化 ———
 msg() {
   case "$LANG_SEL" in
@@ -136,7 +146,7 @@ choose_language() {
   echo "  2) 日本語"
   echo "  3) English"
   printf "> "
-  read -r choice || true
+  read_tty -r choice || true
   case "$choice" in
   1) LANG_SEL="zh" ;;
   2) LANG_SEL="ja" ;;
@@ -273,7 +283,7 @@ prompt_new_password() {
   NEW_PASSWORD=""
   while [ -z "$NEW_PASSWORD" ]; do
     msg prompt_password
-    read -rs NEW_PASSWORD || true
+    read_tty -rs NEW_PASSWORD || true
     echo
     [ -n "$NEW_PASSWORD" ] || msg empty_password
   done
@@ -293,7 +303,7 @@ fresh_install() {
   mkdir -p "$HAIWO_SERVER_HOME" "$DATA_DIR"
 
   msg prompt_port
-  read -r port || true
+  read_tty -r port || true
   [ -n "$port" ] || port="8080"
 
   prompt_new_password
@@ -319,7 +329,7 @@ manage_existing() {
   echo "  3) $(msg act_update)"
   echo "  4) $(msg act_passwd)"
   msg prompt_choice
-  read -r action || true
+  read_tty -r action || true
   case "$action" in
   1)
     msg restarting
