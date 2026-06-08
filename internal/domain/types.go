@@ -134,6 +134,9 @@ type AgentInfo struct {
 type SystemSettings struct {
 	ServerBaseURL string `json:"server_base_url"`
 	ReverseSSHURL string `json:"reverse_ssh_url"`
+	// MaxTaskTimeoutSeconds caps每个任务的超时时间。0 表示不限制；
+	// 大于 0 时，任何 job 配置的超时（含 0=无限）都会被钳制到此上限。
+	MaxTaskTimeoutSeconds int `json:"max_task_timeout_seconds"`
 }
 
 type TaskPayload struct {

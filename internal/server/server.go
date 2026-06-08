@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html"
 	"log"
 	"net/http"
@@ -404,6 +405,9 @@ func (a *App) updateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	settings.ServerBaseURL = normalizeBaseURL(settings.ServerBaseURL)
 	settings.ReverseSSHURL = reverseSSHURLFromBase(settings.ServerBaseURL)
+	if settings.MaxTaskTimeoutSeconds < 0 {
+		settings.MaxTaskTimeoutSeconds = 0
+	}
 	a.store.SaveSettings(settings)
 	writeJSON(w, http.StatusOK, settings)
 }
@@ -620,7 +624,22 @@ func (a *App) runJob(ctx context.Context, run domain.Run, job domain.Job) error 
 	return nil
 }
 
+// clampTaskTimeout 将 job 请求的超时钳制到系统最大超时。
+// max<=0 表示不限制；max>0 时，请求为 0（无限）或超过上限都会被收敛到 max。
+func clampTaskTimeout(requested, max int) int {
+	if max > 0 && (requested <= 0 || requested > max) {
+		return max
+	}
+	return requested
+}
+
 func (a *App) dispatchTask(ctx context.Context, session *AgentSession, run domain.Run, job domain.Job) error {
+	timeout := clampTaskTimeout(job.TimeoutSeconds, a.store.GetSettings().MaxTaskTimeoutSeconds)
+	if timeout != job.TimeoutSeconds {
+		a.store.AppendRunLog(run.ID, "info",
+			fmt.Sprintf("task timeout capped to %ds by system max (job requested %ds)", timeout, job.TimeoutSeconds),
+			a.cfg.Now())
+	}
 	payload := domain.TaskPayload{
 		TaskID:         id("task"),
 		RunID:          run.ID,
@@ -631,7 +650,7 @@ func (a *App) dispatchTask(ctx context.Context, session *AgentSession, run domai
 		Repo:           job.Repo,
 		Env:            job.Env,
 		Secrets:        job.Secrets,
-		TimeoutSeconds: job.TimeoutSeconds,
+		TimeoutSeconds: timeout,
 	}
 	if payload.Repo != nil {
 		payload.Ref = payload.Repo.Ref

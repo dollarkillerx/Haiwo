@@ -115,6 +115,8 @@ const translations = {
     "field.sshPort": "SSH Port",
     "field.reverseSSH": "Reverse SSH WS URL",
     "field.serverBaseURL": "Server URL",
+    "field.maxTaskTimeout": "Max Task Timeout (seconds)",
+    "settings.noLimit": "No limit",
     "help.jobType.title": "Job Type",
     "help.jobType.command": "Command",
     "help.jobType.commandDesc": "Run one or more shell commands on the selected agent.",
@@ -303,6 +305,8 @@ const translations = {
     "field.sshPort": "SSH 端口",
     "field.reverseSSH": "反向 SSH WS 地址",
     "field.serverBaseURL": "Server 域名",
+    "field.maxTaskTimeout": "最大任务超时（秒）",
+    "settings.noLimit": "不限制",
     "help.jobType.title": "任务类型",
     "help.jobType.command": "Command",
     "help.jobType.commandDesc": "在选中的 Agent 上执行一条或多条 shell 命令。",
@@ -491,6 +495,8 @@ const translations = {
     "field.sshPort": "SSH ポート",
     "field.reverseSSH": "リバース SSH WS URL",
     "field.serverBaseURL": "Server URL",
+    "field.maxTaskTimeout": "最大タスクタイムアウト（秒）",
+    "settings.noLimit": "制限なし",
     "help.jobType.title": "Job タイプ",
     "help.jobType.command": "Command",
     "help.jobType.commandDesc": "選択した Agent 上で 1 つ以上の shell コマンドを実行します。",
@@ -596,7 +602,7 @@ const translations = {
 
 let currentLang = initialLanguage();
 let lastSyncTime = "";
-let pipelineSteps = [{ id: genId(), agent_id: "", commands: "echo deploy staging", timeout_seconds: 300 }];
+let pipelineSteps = [{ id: genId(), agent_id: "", commands: "echo deploy staging", timeout_seconds: 1800}];
 document.getElementById("last-refresh").textContent = t("sync.never");
 
 document.querySelectorAll(".nav-item").forEach((button) => {
@@ -743,7 +749,7 @@ function pipelineDefinition(form, steps, project) {
           agent_mode: "single",
           agent_ids: [step.agent_id],
           commands: splitLines(step.commands),
-          timeout_seconds: Number(step.timeout_seconds || 300),
+          timeout_seconds: Number(step.timeout_seconds || 1800),
           required: true,
           repo: project?.repo_url ? { url: project.repo_url, ref: project.default_branch || "main" } : undefined,
         },
@@ -774,7 +780,7 @@ async function createPipelineTrigger(projectID, pipelineID, form, project) {
 function addPipelineStep() {
   updatePipelineStepsFromDOM();
   const firstAgentID = state.agents[0]?.id || "";
-  pipelineSteps.push({ id: genId(), agent_id: firstAgentID, commands: "", timeout_seconds: 300 });
+  pipelineSteps.push({ id: genId(), agent_id: firstAgentID, commands: "", timeout_seconds: 1800});
   renderPipelineSteps();
 }
 
@@ -796,7 +802,7 @@ function updatePipelineStepsFromDOM() {
     id: row.dataset.pipelineStep,
     agent_id: row.querySelector('[name="step_agent"]')?.value || "",
     commands: row.querySelector('[name="step_commands"]')?.value || "",
-    timeout_seconds: Number(row.querySelector('[name="step_timeout"]')?.value || 300),
+    timeout_seconds: Number(row.querySelector('[name="step_timeout"]')?.value || 1800),
   }));
 }
 
@@ -826,7 +832,13 @@ async function createAgent(event) {
 async function saveSettings(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
-  const settings = await api("/api/settings", { method: "PUT", body: { server_base_url: form.get("server_base_url") } });
+  const settings = await api("/api/settings", {
+    method: "PUT",
+    body: {
+      server_base_url: form.get("server_base_url"),
+      max_task_timeout_seconds: Number(form.get("max_task_timeout_seconds") || 0),
+    },
+  });
   state.settings = settings;
   renderSettings();
   notify(t("notice.settingsSaved"));
@@ -1092,12 +1104,18 @@ function renderSettings() {
   const form = document.getElementById("settings-form");
   const baseURL = state.settings?.server_base_url || "";
   const reverseURL = state.settings?.reverse_ssh_url || "";
+  const maxTimeout = Number(state.settings?.max_task_timeout_seconds || 0);
   if (document.activeElement !== form.server_base_url) {
     form.server_base_url.value = baseURL;
   }
+  if (document.activeElement !== form.max_task_timeout_seconds) {
+    form.max_task_timeout_seconds.value = maxTimeout || "";
+  }
+  const timeoutText = maxTimeout > 0 ? `${maxTimeout}s` : t("settings.noLimit");
+  const timeoutItem = `<span>${escapeHTML(t("field.maxTaskTimeout"))}</span>${code(timeoutText)}`;
   document.getElementById("settings-summary").innerHTML = baseURL
-    ? `<div class="setting-item"><span>${escapeHTML(t("field.serverBaseURL"))}</span>${code(baseURL)}<span>${escapeHTML(t("field.reverseSSH"))}</span>${code(reverseURL)}</div>`
-    : `<div class="empty">${escapeHTML(t("settings.reverseSSHEmpty"))}</div>`;
+    ? `<div class="setting-item"><span>${escapeHTML(t("field.serverBaseURL"))}</span>${code(baseURL)}<span>${escapeHTML(t("field.reverseSSH"))}</span>${code(reverseURL)}${timeoutItem}</div>`
+    : `<div class="setting-item"><span class="empty">${escapeHTML(t("settings.reverseSSHEmpty"))}</span>${timeoutItem}</div>`;
 }
 
 function renderTriggerFields() {
@@ -1127,7 +1145,7 @@ function renderPipelineSteps() {
   const target = document.getElementById("pipeline-steps");
   if (!target) return;
   if (!pipelineSteps.length) {
-    pipelineSteps = [{ id: genId(), agent_id: state.agents[0]?.id || "", commands: "", timeout_seconds: 300 }];
+    pipelineSteps = [{ id: genId(), agent_id: state.agents[0]?.id || "", commands: "", timeout_seconds: 1800}];
   }
   pipelineSteps = pipelineSteps.map((step) => ({ ...step, agent_id: step.agent_id || state.agents[0]?.id || "" }));
   target.innerHTML = pipelineSteps.map((step, index) => stepCard(step, index)).join("");
@@ -1143,7 +1161,7 @@ function stepCard(step, index) {
       </div>
       <label><span>${escapeHTML(t("field.stepAgent"))}</span><select name="step_agent">${agentOptions(step.agent_id)}</select></label>
       <label><span>${escapeHTML(t("field.stepCommands"))}</span><textarea name="step_commands" rows="4" spellcheck="false">${escapeHTML(step.commands || "")}</textarea></label>
-      <label><span>${escapeHTML(t("field.timeout"))}</span><input name="step_timeout" type="number" min="0" value="${Number(step.timeout_seconds || 300)}" /></label>
+      <label><span>${escapeHTML(t("field.timeout"))}</span><input name="step_timeout" type="number" min="0" value="${Number(step.timeout_seconds || 1800)}" /></label>
     </div>
   `;
 }
@@ -1478,7 +1496,7 @@ function resetPipelineFormDefaults() {
   state.editingPipelineId = "";
   form.pipeline_name.value = "staging deploy";
   form.trigger_type.value = "manual";
-  pipelineSteps = [{ id: genId(), agent_id: state.agents[0]?.id || "", commands: "echo deploy staging", timeout_seconds: 300 }];
+  pipelineSteps = [{ id: genId(), agent_id: state.agents[0]?.id || "", commands: "echo deploy staging", timeout_seconds: 1800}];
   syncPipelineRef(true);
   renderTriggerFields();
   renderPipelineSteps();
@@ -1500,11 +1518,11 @@ function pipelineStepsFromDefinition(pipeline) {
         id: genId(),
         agent_id: job.agent_ids?.[0] || "",
         commands: (job.commands || []).join("\n"),
-        timeout_seconds: Number(job.timeout_seconds || 300),
+        timeout_seconds: Number(job.timeout_seconds || 1800),
       });
     }
   }
-  return steps.length ? steps : [{ id: genId(), agent_id: state.agents[0]?.id || "", commands: "", timeout_seconds: 300 }];
+  return steps.length ? steps : [{ id: genId(), agent_id: state.agents[0]?.id || "", commands: "", timeout_seconds: 1800}];
 }
 
 function resetAgentFormDefaults() {
