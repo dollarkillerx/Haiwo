@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	dbmodel "github.com/haiwo-ci/haiwo/internal/database"
 	"github.com/haiwo-ci/haiwo/internal/domain"
 	"github.com/haiwo-ci/haiwo/internal/jsonrpc"
 	"github.com/robfig/cron/v3"
@@ -28,8 +27,21 @@ type Config struct {
 	Addr        string
 	AgentToken  string
 	WebPassword string
-	DB          *gorm.DB
+	Storage     StorageOptions
 	Now         func() time.Time
+}
+
+// StorageOptions selects the durable backend for the store. When DB is set the
+// PostgreSQL backend is used; otherwise, if DataFile is set, the file backend is
+// used. With neither set the store is purely in-memory (used by tests).
+//
+// For the file backend, control-plane state goes to DataFile and run logs stream
+// to LogFile (rotated once it would exceed LogMaxBytes).
+type StorageOptions struct {
+	DB          *gorm.DB
+	DataFile    string
+	LogFile     string
+	LogMaxBytes int64
 }
 
 type App struct {
@@ -66,7 +78,7 @@ func New(cfg Config) *App {
 	}
 	app := &App{
 		cfg:       cfg,
-		store:     NewStore(cfg.Now, cfg.DB),
+		store:     NewStore(cfg.Now, cfg.Storage),
 		cron:      cron.New(),
 		terminals: map[string]*terminalBridge{},
 		tickets:   map[string]terminalTicket{},
@@ -751,7 +763,7 @@ func (a *App) deployScript(r *http.Request, agent domain.AgentInfo) string {
 		"set -euo pipefail",
 		"",
 		"# Haiwo agent deployment script.",
-		": ${HAIWO_AGENT_BINARY_URL:=https://fileoss.hacksnews.top/haiwo-agent-linux-amd64}",
+		": ${HAIWO_AGENT_BINARY_URL:=https://github.com/dollarkillerx/Haiwo/releases/download/v0.0.1/haiwo-agent-linux-amd64}",
 		"export HAIWO_SERVER_URL=" + shellQuote(serverURL),
 		"export HAIWO_AGENT_TOKEN=" + shellQuote(agent.Token),
 		"export HAIWO_AGENT_ID=" + shellQuote(agent.ID),
@@ -1004,7 +1016,7 @@ func checkWebSocketOrigin(r *http.Request) bool {
 type Store struct {
 	mu        sync.RWMutex
 	now       func() time.Time
-	db        *gorm.DB
+	persist   Persister
 	projects  map[string]domain.Project
 	pipelines map[string]domain.Pipeline
 	triggers  map[string]domain.Trigger
@@ -1013,10 +1025,9 @@ type Store struct {
 	settings  domain.SystemSettings
 }
 
-func NewStore(now func() time.Time, db *gorm.DB) *Store {
+func NewStore(now func() time.Time, storage StorageOptions) *Store {
 	s := &Store{
 		now:       now,
-		db:        db,
 		projects:  map[string]domain.Project{},
 		pipelines: map[string]domain.Pipeline{},
 		triggers:  map[string]domain.Trigger{},
@@ -1024,23 +1035,49 @@ func NewStore(now func() time.Time, db *gorm.DB) *Store {
 		runs:      map[string]domain.Run{},
 		settings:  domain.SystemSettings{},
 	}
-	s.loadFromDB()
+	switch {
+	case storage.DB != nil:
+		s.persist = newPostgresPersister(storage.DB, now)
+	case storage.DataFile != "":
+		fp, err := newFilePersister(storage.DataFile, storage.LogFile, storage.LogMaxBytes, s.snapshotLocked)
+		if err != nil {
+			log.Fatalf("init file storage at %s failed: %v", storage.DataFile, err)
+		}
+		s.persist = fp
+	}
+	s.load()
 	return s
+}
+
+// snapshotLocked builds a full copy of the store's state for the file backend.
+// The caller (a Save*/Delete* method) holds s.mu, so the maps are read without
+// taking the lock again.
+func (s *Store) snapshotLocked() persistState {
+	state := persistState{Settings: s.settings}
+	for _, v := range s.projects {
+		state.Projects = append(state.Projects, v)
+	}
+	for _, v := range s.pipelines {
+		state.Pipelines = append(state.Pipelines, v)
+	}
+	for _, v := range s.triggers {
+		state.Triggers = append(state.Triggers, v)
+	}
+	for _, v := range s.agents {
+		state.Agents = append(state.Agents, v)
+	}
+	for _, v := range s.runs {
+		state.Runs = append(state.Runs, v)
+	}
+	return state
 }
 
 func (s *Store) SaveProject(v domain.Project) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.projects[v.ID] = v
-	if s.db != nil {
-		if err := s.db.Save(&dbmodel.Project{
-			ID:            v.ID,
-			Name:          v.Name,
-			Provider:      v.Provider,
-			RepoURL:       v.RepoURL,
-			DefaultBranch: v.DefaultBranch,
-			CreatedAt:     v.CreatedAt,
-		}).Error; err != nil {
+	if s.persist != nil {
+		if err := s.persist.SaveProject(v); err != nil {
 			log.Printf("save project failed: %v", err)
 		}
 	}
@@ -1050,19 +1087,8 @@ func (s *Store) SavePipeline(v domain.Pipeline) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pipelines[v.ID] = v
-	if s.db != nil {
-		definition, err := json.Marshal(v.Stages)
-		if err != nil {
-			log.Printf("marshal pipeline failed: %v", err)
-			return
-		}
-		if err := s.db.Save(&dbmodel.Pipeline{
-			ID:         v.ID,
-			ProjectID:  v.ProjectID,
-			Name:       v.Name,
-			Definition: definition,
-			CreatedAt:  v.CreatedAt,
-		}).Error; err != nil {
+	if s.persist != nil {
+		if err := s.persist.SavePipeline(v); err != nil {
 			log.Printf("save pipeline failed: %v", err)
 		}
 	}
@@ -1072,19 +1098,8 @@ func (s *Store) SaveTrigger(v domain.Trigger) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.triggers[v.ID] = v
-	if s.db != nil {
-		if err := s.db.Save(&dbmodel.Trigger{
-			ID:             v.ID,
-			ProjectID:      v.ProjectID,
-			PipelineID:     v.PipelineID,
-			Type:           v.Type,
-			BranchPattern:  v.BranchPattern,
-			CommitPattern:  v.CommitPattern,
-			TagPattern:     v.TagPattern,
-			CommentPattern: v.CommentPattern,
-			Cron:           v.Cron,
-			CreatedAt:      v.CreatedAt,
-		}).Error; err != nil {
+	if s.persist != nil {
+		if err := s.persist.SaveTrigger(v); err != nil {
 			log.Printf("save trigger failed: %v", err)
 		}
 	}
@@ -1098,8 +1113,8 @@ func (s *Store) DeleteTriggersForPipeline(pipelineID string) {
 			delete(s.triggers, id)
 		}
 	}
-	if s.db != nil {
-		if err := s.db.Delete(&dbmodel.Trigger{}, "pipeline_id = ?", pipelineID).Error; err != nil {
+	if s.persist != nil {
+		if err := s.persist.DeleteTriggersForPipeline(pipelineID); err != nil {
 			log.Printf("delete pipeline triggers failed: %v", err)
 		}
 	}
@@ -1109,40 +1124,30 @@ func (s *Store) SaveAgent(v domain.AgentInfo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.agents[v.ID] = v
-	if s.db != nil {
-		labels, err := json.Marshal(v.Labels)
-		if err != nil {
-			log.Printf("marshal agent labels failed: %v", err)
-			return
-		}
-		if err := s.db.Save(&dbmodel.Agent{
-			ID:            v.ID,
-			Name:          v.Name,
-			Token:         v.Token,
-			Version:       v.Version,
-			Labels:        labels,
-			Status:        string(v.Status),
-			CurrentRun:    v.CurrentRun,
-			MaxRunning:    v.MaxRunning,
-			SSHEnabled:    v.SSHEnabled,
-			SSHHost:       v.SSHHost,
-			SSHPort:       v.SSHPort,
-			SSHUser:       v.SSHUser,
-			ReverseSSHURL: v.ReverseSSHURL,
-			CreatedAt:     v.CreatedAt,
-			LastSeenAt:    v.LastSeenAt,
-		}).Error; err != nil {
+	if s.persist != nil {
+		if err := s.persist.SaveAgent(v); err != nil {
 			log.Printf("save agent failed: %v", err)
 		}
 	}
+}
+
+// SaveAgentRuntime updates only the in-memory agent record without writing to the
+// durable backend. It is used for heartbeats, which fire every few seconds and
+// carry only volatile data (status, last-seen, CPU/memory, current run) that is
+// reset on reload anyway — persisting it would rewrite the whole state file on
+// every heartbeat for no benefit.
+func (s *Store) SaveAgentRuntime(v domain.AgentInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.agents[v.ID] = v
 }
 
 func (s *Store) DeleteAgent(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.agents, id)
-	if s.db != nil {
-		if err := s.db.Delete(&dbmodel.Agent{ID: id}).Error; err != nil {
+	if s.persist != nil {
+		if err := s.persist.DeleteAgent(id); err != nil {
 			log.Printf("delete agent failed: %v", err)
 		}
 	}
@@ -1166,25 +1171,8 @@ func (s *Store) SaveRun(v domain.Run) {
 		v.Metadata = existing.Metadata
 	}
 	s.runs[v.ID] = v
-	if s.db != nil {
-		metadata, err := json.Marshal(v.Metadata)
-		if err != nil {
-			log.Printf("marshal run metadata failed: %v", err)
-			return
-		}
-		if err := s.db.Save(&dbmodel.Run{
-			ID:         v.ID,
-			ProjectID:  v.ProjectID,
-			PipelineID: v.PipelineID,
-			Status:     string(v.Status),
-			Source:     v.Source,
-			Ref:        v.Ref,
-			Comment:    v.Comment,
-			CommitSHA:  v.CommitSHA,
-			Metadata:   metadata,
-			CreatedAt:  v.CreatedAt,
-			UpdatedAt:  v.UpdatedAt,
-		}).Error; err != nil {
+	if s.persist != nil {
+		if err := s.persist.SaveRun(v); err != nil {
 			log.Printf("save run failed: %v", err)
 		}
 	}
@@ -1221,8 +1209,17 @@ func (s *Store) AppendRunLog(runID, stream, line string, at time.Time) {
 		run.Metadata["error"] = line
 	}
 	s.runs[runID] = run
+	persist := s.persist
 	s.mu.Unlock()
-	s.SaveRun(run)
+	// Logs are high-frequency (one call per streamed line); persist them through
+	// the dedicated log path rather than rewriting the whole state. The capped
+	// in-memory buffer above keeps recent logs available to the UI, and the next
+	// run status change persists it to the state snapshot.
+	if persist != nil {
+		if err := persist.AppendRunLog(run, entry); err != nil {
+			log.Printf("append run log failed: %v", err)
+		}
+	}
 }
 
 func (s *Store) GetAgent(id string) (domain.AgentInfo, bool) {
@@ -1256,13 +1253,8 @@ func (s *Store) SaveSettings(v domain.SystemSettings) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.settings = v
-	if s.db != nil {
-		value, err := json.Marshal(v)
-		if err != nil {
-			log.Printf("marshal settings failed: %v", err)
-			return
-		}
-		if err := s.db.Save(&dbmodel.SystemSetting{Key: "system", Value: value, UpdatedAt: s.now()}).Error; err != nil {
+	if s.persist != nil {
+		if err := s.persist.SaveSettings(v); err != nil {
 			log.Printf("save settings failed: %v", err)
 		}
 	}
@@ -1343,120 +1335,36 @@ func (s *Store) ListAgents() []domain.AgentInfo {
 	return out
 }
 
-func (s *Store) loadFromDB() {
-	if s.db == nil {
+// load hydrates the in-memory maps from the durable backend on startup. Agents
+// are forced offline with no running jobs since their live sessions are gone
+// after a restart, regardless of the status last written to the backend.
+func (s *Store) load() {
+	if s.persist == nil {
 		return
 	}
-	var projects []dbmodel.Project
-	if err := s.db.Find(&projects).Error; err != nil {
-		log.Printf("load projects failed: %v", err)
-	} else {
-		for _, v := range projects {
-			s.projects[v.ID] = domain.Project{
-				ID:            v.ID,
-				Name:          v.Name,
-				Provider:      v.Provider,
-				RepoURL:       v.RepoURL,
-				DefaultBranch: v.DefaultBranch,
-				CreatedAt:     v.CreatedAt,
-			}
-		}
+	state, err := s.persist.Load()
+	if err != nil {
+		log.Printf("load persisted state failed: %v", err)
+		return
 	}
-	var pipelines []dbmodel.Pipeline
-	if err := s.db.Find(&pipelines).Error; err != nil {
-		log.Printf("load pipelines failed: %v", err)
-	} else {
-		for _, v := range pipelines {
-			var stages []domain.Stage
-			if len(v.Definition) > 0 {
-				_ = json.Unmarshal(v.Definition, &stages)
-			}
-			s.pipelines[v.ID] = domain.Pipeline{
-				ID:        v.ID,
-				ProjectID: v.ProjectID,
-				Name:      v.Name,
-				Stages:    stages,
-				CreatedAt: v.CreatedAt,
-			}
-		}
+	for _, v := range state.Projects {
+		s.projects[v.ID] = v
 	}
-	var triggers []dbmodel.Trigger
-	if err := s.db.Find(&triggers).Error; err != nil {
-		log.Printf("load triggers failed: %v", err)
-	} else {
-		for _, v := range triggers {
-			s.triggers[v.ID] = domain.Trigger{
-				ID:             v.ID,
-				ProjectID:      v.ProjectID,
-				PipelineID:     v.PipelineID,
-				Type:           v.Type,
-				BranchPattern:  v.BranchPattern,
-				CommitPattern:  v.CommitPattern,
-				TagPattern:     v.TagPattern,
-				CommentPattern: v.CommentPattern,
-				Cron:           v.Cron,
-				CreatedAt:      v.CreatedAt,
-			}
-		}
+	for _, v := range state.Pipelines {
+		s.pipelines[v.ID] = v
 	}
-	var agents []dbmodel.Agent
-	if err := s.db.Find(&agents).Error; err != nil {
-		log.Printf("load agents failed: %v", err)
-	} else {
-		for _, v := range agents {
-			var labels []string
-			if len(v.Labels) > 0 {
-				_ = json.Unmarshal(v.Labels, &labels)
-			}
-			s.agents[v.ID] = domain.AgentInfo{
-				ID:            v.ID,
-				Name:          v.Name,
-				Token:         v.Token,
-				Version:       v.Version,
-				Labels:        labels,
-				Status:        domain.AgentOffline,
-				CurrentRun:    0,
-				MaxRunning:    v.MaxRunning,
-				SSHEnabled:    v.SSHEnabled,
-				SSHHost:       v.SSHHost,
-				SSHPort:       v.SSHPort,
-				SSHUser:       v.SSHUser,
-				ReverseSSHURL: v.ReverseSSHURL,
-				CreatedAt:     v.CreatedAt,
-				LastSeenAt:    v.LastSeenAt,
-			}
-		}
+	for _, v := range state.Triggers {
+		s.triggers[v.ID] = v
 	}
-	var runs []dbmodel.Run
-	if err := s.db.Find(&runs).Error; err != nil {
-		log.Printf("load runs failed: %v", err)
-	} else {
-		for _, v := range runs {
-			var metadata map[string]string
-			if len(v.Metadata) > 0 {
-				_ = json.Unmarshal(v.Metadata, &metadata)
-			}
-			s.runs[v.ID] = domain.Run{
-				ID:         v.ID,
-				ProjectID:  v.ProjectID,
-				PipelineID: v.PipelineID,
-				Status:     domain.RunStatus(v.Status),
-				Source:     v.Source,
-				Ref:        v.Ref,
-				Comment:    v.Comment,
-				CommitSHA:  v.CommitSHA,
-				Metadata:   metadata,
-				CreatedAt:  v.CreatedAt,
-				UpdatedAt:  v.UpdatedAt,
-			}
-		}
+	for _, v := range state.Agents {
+		v.Status = domain.AgentOffline
+		v.CurrentRun = 0
+		s.agents[v.ID] = v
 	}
-	var setting dbmodel.SystemSetting
-	if err := s.db.First(&setting, "key = ?", "system").Error; err == nil && len(setting.Value) > 0 {
-		_ = json.Unmarshal(setting.Value, &s.settings)
-	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		log.Printf("load settings failed: %v", err)
+	for _, v := range state.Runs {
+		s.runs[v.ID] = v
 	}
+	s.settings = state.Settings
 }
 
 type AgentSession struct {
@@ -1548,7 +1456,7 @@ func (h *AgentHub) HeartbeatHandler(session *AgentSession) jsonrpc.Handler {
 		}
 		info.Status = domain.AgentOnline
 		info.LastSeenAt = time.Now()
-		h.store.SaveAgent(info)
+		h.store.SaveAgentRuntime(info)
 		return map[string]bool{"ok": true}, nil
 	}
 }

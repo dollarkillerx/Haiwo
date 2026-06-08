@@ -1,9 +1,13 @@
-# Haiwo local stack: PostgreSQL + Haiwo server
+# Haiwo server
 # Build image: make img-build
 # Start: make up or docker compose up -d
 #
-# The server mounts configs/config.toml and overrides Postgres host/port through
-# Viper environment variables. Example:
+# Default storage backend is "file": state is persisted to /app/data/haiwo.json,
+# which is mounted to ./data so it survives container restarts.
+#
+# To use PostgreSQL instead, set StorageConfiguration.Backend = "postgres" in
+# configs/config.toml (or via env: STORAGECONFIGURATION_BACKEND=postgres) and
+# point PostgresConfiguration.* at your database. Viper env override example:
 # PostgresConfiguration.Host -> POSTGRESCONFIGURATION_HOST
 
 services:
@@ -14,5 +18,6 @@ services:
       - "8181:8080"
     volumes:
       - ./configs/config.toml:/app/configs/config.toml:ro
+      - ./data:/app/data
     restart: unless-stopped
 

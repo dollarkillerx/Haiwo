@@ -8,13 +8,22 @@ Token = "dev-agent-token"
 [WebConfiguration]
 Password = "haiwo"
 
+[StorageConfiguration]
+# Backend selects where data is persisted: "file" (default) or "postgres".
+Backend = "file"
+# DataFile is the control-plane state file used by the file backend.
+DataFile = "./data/haiwo.json"
+# LogFile is the separate run-log stream. It is rotated once it would exceed
+# LogMaxMB megabytes (the previous segment is dropped, keeping recent logs).
+LogFile = "./data/haiwo.log"
+LogMaxMB = 50
+
 [PostgresConfiguration]
-# Set Enabled = true to connect to Postgres and run GORM AutoMigrate at server startup.
-Enabled = true
+# Connection settings used only when StorageConfiguration.Backend = "postgres".
 Host = "127.0.0.1"
 Port = 18432
 User = "pacman"
-Password = "MEB3oZZkpxgA1q4WcA10"
+Password = ""
 DBName = "pacman"
 SSLMode = "disable"
 TimeZone = "UTC"

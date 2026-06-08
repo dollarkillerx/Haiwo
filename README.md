@@ -6,7 +6,7 @@
 
 Haiwo is a Go-based CI/CD MVP with a central server, pull-based agents, JSON-RPC communication, webhook/schedule/manual triggers, pipeline orchestration, and code rollback history.
 
-The current implementation is an MVP scaffold. When Postgres is enabled, projects, pipelines, triggers, agents, runs, and settings are persisted through GORM models created with `AutoMigrate`.
+The current implementation is an MVP scaffold. Projects, pipelines, triggers, agents, runs, and settings are persisted by the selected storage backend. Two backends are supported: a **file** backend (the default, a single JSON file) and **PostgreSQL** (via GORM models created with `AutoMigrate`).
 
 Deployment and operations are documented in [DEPLOYMENT.md](DEPLOYMENT.md).
 
@@ -205,9 +205,10 @@ Brand asset:
 
 ### 1.8 Current MVP Limits
 
-- Runtime state falls back to memory when Postgres is disabled.
-- When Postgres is enabled, core control-plane records are persisted and reloaded on server startup.
-- Migrations use GORM `AutoMigrate`; SQL migration files are not used.
+- Storage backend is selected by `StorageConfiguration.Backend`: `file` (default) or `postgres`.
+- The file backend keeps control-plane state in a JSON file (`StorageConfiguration.DataFile`, default `./data/haiwo.json`, rewritten atomically on each change) and streams run logs to a separate append-only log file (`StorageConfiguration.LogFile`, default `./data/haiwo.log`) that rotates once it would exceed `LogMaxMB` (default 50MB), so high-frequency log writes never rewrite the state file.
+- Control-plane records are reloaded from the configured backend on server startup; agents are reset to offline on reload. A corrupt state file is preserved as `*.corrupt` instead of being overwritten.
+- Postgres migrations use GORM `AutoMigrate`; SQL migration files are not used.
 - Secrets are modeled but not yet encrypted or persisted.
 - Web UI supports common MVP operations, not full rollback editing yet.
 - Pipeline creation and editing support manual, push branch, push commit-message, and tag triggers plus ordered Agent command steps.
@@ -220,7 +221,7 @@ Brand asset:
 Required:
 
 - Go 1.26+
-- PostgreSQL, when `PostgresConfiguration.Enabled = true`
+- PostgreSQL, only when `StorageConfiguration.Backend = "postgres"` (the default `file` backend needs no database)
 
 ### 2.2 Run Server
 

@@ -8,9 +8,21 @@ import (
 
 type Config struct {
 	ServiceConfiguration  ServiceConfiguration  `mapstructure:"ServiceConfiguration"`
+	StorageConfiguration  StorageConfiguration  `mapstructure:"StorageConfiguration"`
 	PostgresConfiguration PostgresConfiguration `mapstructure:"PostgresConfiguration"`
 	AgentConfiguration    AgentConfiguration    `mapstructure:"AgentConfiguration"`
 	WebConfiguration      WebConfiguration      `mapstructure:"WebConfiguration"`
+}
+
+// StorageConfiguration selects the durable backend for the server.
+// Backend is "file" (default) or "postgres". For the file backend, control-plane
+// state is written to DataFile and run logs stream to LogFile, which is rotated
+// once it would exceed LogMaxMB megabytes (the previous segment is dropped).
+type StorageConfiguration struct {
+	Backend  string `mapstructure:"Backend"`
+	DataFile string `mapstructure:"DataFile"`
+	LogFile  string `mapstructure:"LogFile"`
+	LogMaxMB int    `mapstructure:"LogMaxMB"`
 }
 
 type ServiceConfiguration struct {
@@ -75,6 +87,25 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.WebConfiguration.Password == "" {
 		cfg.WebConfiguration.Password = "haiwo"
+	}
+	if cfg.StorageConfiguration.Backend == "" {
+		// Backward compatibility: if the legacy Postgres toggle is on and no
+		// backend was chosen explicitly, keep using Postgres; otherwise default
+		// to the file backend.
+		if cfg.PostgresConfiguration.Enabled {
+			cfg.StorageConfiguration.Backend = "postgres"
+		} else {
+			cfg.StorageConfiguration.Backend = "file"
+		}
+	}
+	if cfg.StorageConfiguration.DataFile == "" {
+		cfg.StorageConfiguration.DataFile = "./data/haiwo.json"
+	}
+	if cfg.StorageConfiguration.LogFile == "" {
+		cfg.StorageConfiguration.LogFile = "./data/haiwo.log"
+	}
+	if cfg.StorageConfiguration.LogMaxMB == 0 {
+		cfg.StorageConfiguration.LogMaxMB = 50
 	}
 	if cfg.PostgresConfiguration.Port == 0 {
 		cfg.PostgresConfiguration.Port = 5432

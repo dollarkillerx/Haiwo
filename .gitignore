@@ -31,6 +31,10 @@ go.work.sum
 # Haiwo local agent workspace
 .haiwo-agent/
 
+# Haiwo file storage backend data
+data/
+*.json.tmp
+
 # Editor/IDE
 # .idea/
 # .vscode/

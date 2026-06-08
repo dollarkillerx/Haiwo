@@ -1,3 +1,20 @@
+// crypto.randomUUID() only exists in secure contexts (https or localhost). Over
+// plain http on a remote IP it is undefined, which used to break the whole UI.
+// genId() falls back to getRandomValues, then to a timestamp+random id.
+function genId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const b = crypto.getRandomValues(new Uint8Array(16));
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    const h = Array.from(b, (x) => x.toString(16).padStart(2, "0"));
+    return `${h[0]}${h[1]}${h[2]}${h[3]}-${h[4]}${h[5]}-${h[6]}${h[7]}-${h[8]}${h[9]}-${h[10]}${h[11]}${h[12]}${h[13]}${h[14]}${h[15]}`;
+  }
+  return "id-" + Date.now().toString(16) + "-" + Math.random().toString(16).slice(2, 10);
+}
+
 const state = {
   projects: [],
   pipelines: [],
@@ -579,7 +596,7 @@ const translations = {
 
 let currentLang = initialLanguage();
 let lastSyncTime = "";
-let pipelineSteps = [{ id: crypto.randomUUID(), agent_id: "", commands: "echo deploy staging", timeout_seconds: 300 }];
+let pipelineSteps = [{ id: genId(), agent_id: "", commands: "echo deploy staging", timeout_seconds: 300 }];
 document.getElementById("last-refresh").textContent = t("sync.never");
 
 document.querySelectorAll(".nav-item").forEach((button) => {
@@ -757,7 +774,7 @@ async function createPipelineTrigger(projectID, pipelineID, form, project) {
 function addPipelineStep() {
   updatePipelineStepsFromDOM();
   const firstAgentID = state.agents[0]?.id || "";
-  pipelineSteps.push({ id: crypto.randomUUID(), agent_id: firstAgentID, commands: "", timeout_seconds: 300 });
+  pipelineSteps.push({ id: genId(), agent_id: firstAgentID, commands: "", timeout_seconds: 300 });
   renderPipelineSteps();
 }
 
@@ -1110,7 +1127,7 @@ function renderPipelineSteps() {
   const target = document.getElementById("pipeline-steps");
   if (!target) return;
   if (!pipelineSteps.length) {
-    pipelineSteps = [{ id: crypto.randomUUID(), agent_id: state.agents[0]?.id || "", commands: "", timeout_seconds: 300 }];
+    pipelineSteps = [{ id: genId(), agent_id: state.agents[0]?.id || "", commands: "", timeout_seconds: 300 }];
   }
   pipelineSteps = pipelineSteps.map((step) => ({ ...step, agent_id: step.agent_id || state.agents[0]?.id || "" }));
   target.innerHTML = pipelineSteps.map((step, index) => stepCard(step, index)).join("");
@@ -1461,7 +1478,7 @@ function resetPipelineFormDefaults() {
   state.editingPipelineId = "";
   form.pipeline_name.value = "staging deploy";
   form.trigger_type.value = "manual";
-  pipelineSteps = [{ id: crypto.randomUUID(), agent_id: state.agents[0]?.id || "", commands: "echo deploy staging", timeout_seconds: 300 }];
+  pipelineSteps = [{ id: genId(), agent_id: state.agents[0]?.id || "", commands: "echo deploy staging", timeout_seconds: 300 }];
   syncPipelineRef(true);
   renderTriggerFields();
   renderPipelineSteps();
@@ -1480,14 +1497,14 @@ function pipelineStepsFromDefinition(pipeline) {
   for (const stage of pipeline.stages || []) {
     for (const job of stage.jobs || []) {
       steps.push({
-        id: crypto.randomUUID(),
+        id: genId(),
         agent_id: job.agent_ids?.[0] || "",
         commands: (job.commands || []).join("\n"),
         timeout_seconds: Number(job.timeout_seconds || 300),
       });
     }
   }
-  return steps.length ? steps : [{ id: crypto.randomUUID(), agent_id: state.agents[0]?.id || "", commands: "", timeout_seconds: 300 }];
+  return steps.length ? steps : [{ id: genId(), agent_id: state.agents[0]?.id || "", commands: "", timeout_seconds: 300 }];
 }
 
 function resetAgentFormDefaults() {

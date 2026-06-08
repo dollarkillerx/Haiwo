@@ -10,7 +10,6 @@ import (
 	"github.com/haiwo-ci/haiwo/internal/conf"
 	"github.com/haiwo-ci/haiwo/internal/database"
 	"github.com/haiwo-ci/haiwo/internal/server"
-	"gorm.io/gorm"
 )
 
 func main() {
@@ -23,24 +22,33 @@ func main() {
 		log.Fatal(err)
 	}
 
-	var db *gorm.DB
-	if appConfig.PostgresConfiguration.Enabled {
-		var err error
-		db, err = database.OpenPostgres(appConfig.PostgresConfiguration)
+	var storage server.StorageOptions
+	switch appConfig.StorageConfiguration.Backend {
+	case "postgres":
+		db, err := database.OpenPostgres(appConfig.PostgresConfiguration)
 		if err != nil {
 			log.Fatal(err)
 		}
 		if err := database.AutoMigrate(db); err != nil {
 			log.Fatal(err)
 		}
-		log.Println("database migrated")
+		log.Println("storage backend: postgres (migrated)")
+		storage.DB = db
+	case "file":
+		storage.DataFile = appConfig.StorageConfiguration.DataFile
+		storage.LogFile = appConfig.StorageConfiguration.LogFile
+		storage.LogMaxBytes = int64(appConfig.StorageConfiguration.LogMaxMB) * 1024 * 1024
+		log.Printf("storage backend: file (state=%s, logs=%s, logMaxMB=%d)",
+			storage.DataFile, storage.LogFile, appConfig.StorageConfiguration.LogMaxMB)
+	default:
+		log.Fatalf("unknown storage backend %q (expected \"file\" or \"postgres\")", appConfig.StorageConfiguration.Backend)
 	}
 
 	cfg := server.Config{
 		Addr:        appConfig.ServiceConfiguration.Addr,
 		AgentToken:  appConfig.AgentConfiguration.Token,
 		WebPassword: appConfig.WebConfiguration.Password,
-		DB:          db,
+		Storage:     storage,
 		Now:         time.Now,
 	}
 
