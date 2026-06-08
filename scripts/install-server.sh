@@ -12,7 +12,7 @@
 set -euo pipefail
 
 : "${HAIWO_SERVER_HOME:=${HOME:-/opt/haiwo}/.haiwo/server}"
-: "${HAIWO_SERVER_BINARY_URL:=https://github.com/dollarkillerx/Haiwo/releases/download/v0.0.3/haiwo-server-linux-amd64}"
+: "${HAIWO_SERVER_BINARY_URL:=https://github.com/dollarkillerx/Haiwo/releases/download/v0.0.4/haiwo-server-linux-amd64}"
 
 BIN="${HAIWO_SERVER_HOME}/haiwo-server"
 CONFIG="${HAIWO_SERVER_HOME}/config.toml"
